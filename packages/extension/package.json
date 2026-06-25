@@ -1,0 +1,53 @@
+{
+  "name": "playwright-locator-lens",
+  "displayName": "Playwright Locator Lens",
+  "description": "Live Playwright Locator Validation & Analysis in VS Code",
+  "version": "0.1.0",
+  "publisher": "playwright-tools",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Testing",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "playwright-locator-lens-container",
+          "title": "Playwright Locator Lens",
+          "icon": "$(eye)"
+        }
+      ]
+    },
+    "views": {
+      "playwright-locator-lens-container": [
+        {
+          "type": "webview",
+          "id": "playwright-locator-lens-sidebar",
+          "name": "Playwright Locator Lens"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node build.js",
+    "watch": "node build.js --watch",
+    "build": "npm run compile",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "playwright-core": "^1.40.0",
+    "playwright-locator-lens-engine": "file:../engine",
+    "playwright-locator-lens-parser": "file:../locator-parser",
+    "playwright-locator-lens-shared": "file:../shared"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "esbuild": "^0.28.1"
+  }
+}

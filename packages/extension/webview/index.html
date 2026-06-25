@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playwright Locator Lens</title>
+  <link rel="stylesheet" href="${styleUri}">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo">
+        <svg class="lens-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+          <path d="M18.5 5.5L21 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span class="gradient-text">Locator Lens</span>
+      </div>
+      <div class="badge">MVP</div>
+    </header>
+
+    <!-- CDP Connection Card -->
+    <section class="card connection-card">
+      <div class="card-header">
+        <h3>CDP Connection</h3>
+        <span id="connection-status" class="status-indicator disconnected">Disconnected</span>
+      </div>
+      
+      <div class="connection-inputs" id="connection-inputs-group">
+        <div class="input-group">
+          <label for="cdp-url">CDP URL</label>
+          <input type="text" id="cdp-url" value="http://localhost:9222" placeholder="http://localhost:9222">
+        </div>
+        <button id="connect-btn" class="btn btn-primary">Connect</button>
+      </div>
+
+      <div class="connected-info hidden" id="connected-info">
+        <div class="input-group">
+          <label for="tab-select">Active Page/Tab</label>
+          <select id="tab-select"></select>
+        </div>
+        <button id="disconnect-btn" class="btn btn-secondary">Disconnect</button>
+      </div>
+    </section>
+
+    <!-- Playground Input Card -->
+    <section class="card playground-card">
+      <div class="card-header">
+        <h3>Locator Playground</h3>
+        <div class="playground-controls">
+          <button id="undo-btn" class="btn-icon" disabled title="Undo (Ctrl+Z)">↶</button>
+          <button id="redo-btn" class="btn-icon" disabled title="Redo (Ctrl+Y)">↷</button>
+          <button id="history-btn" class="btn-icon" title="Recent History">🕒</button>
+          <div id="history-dropdown" class="history-dropdown hidden"></div>
+        </div>
+      </div>
+      
+      <div class="input-group" style="position: relative;">
+        <label for="locator-input">Locator Expression</label>
+        <textarea id="locator-input" placeholder="getByRole('button', { name: 'Submit' })" spellcheck="false" rows="3"></textarea>
+        <div id="autocomplete-list" class="autocomplete-list hidden"></div>
+        <span class="tip">Supports page.getBy... or direct shorthand like getByRole(...)</span>
+      </div>
+
+      <div class="actions-group">
+        <button id="evaluate-btn" class="btn btn-primary btn-full" disabled>Evaluate & Highlight</button>
+        <button id="clear-hl-btn" class="btn btn-secondary" disabled title="Clear Highlights">Clear</button>
+      </div>
+    </section>
+
+    <!-- Loading Spinner -->
+    <div id="loader" class="loader-container hidden">
+      <div class="spinner"></div>
+      <span>Evaluating locator...</span>
+    </div>
+
+    <!-- Error Display -->
+    <div id="error-card" class="error-card hidden">
+      <div class="error-header">
+        <span class="error-icon">⚠</span>
+        <span id="error-title">Error</span>
+      </div>
+      <p id="error-message"></p>
+    </div>
+
+    <!-- Evaluation Results Panel -->
+    <div id="results-panel" class="results-panel hidden">
+      
+      <!-- Match Banner -->
+      <div class="match-banner" id="match-banner">
+        <div class="match-info">
+          <span class="match-count" id="res-match-count">0</span>
+          <span class="match-text" id="res-match-text">matches found</span>
+        </div>
+        <div class="match-navigation hidden" id="match-navigation">
+          <button id="prev-btn" class="nav-btn" title="Previous match">▲</button>
+          <span id="nav-index">1/1</span>
+          <button id="next-btn" class="nav-btn" title="Next match">▼</button>
+        </div>
+      </div>
+
+      <!-- Failure Analysis Card (Phase 6) -->
+      <section class="card failure-card hidden" id="failure-analysis-card">
+        <div class="card-header failure">
+          <h3>Locator Failure Diagnosis</h3>
+        </div>
+        <div class="failure-content">
+          <p class="failure-msg" id="failure-msg"></p>
+          
+          <div class="failure-steps" id="failure-steps-list">
+            <!-- Steps of the parser chain evaluated -->
+          </div>
+
+          <div class="failure-suggestions" id="failure-suggestions-section">
+            <h4>Suggested Fixes:</h4>
+            <div class="suggestions-list" id="failure-suggestions-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Confidence Meter (Phase 4) -->
+      <section class="card confidence-card">
+        <div class="card-header">
+          <h3>Confidence Score</h3>
+          <span class="score-badge" id="res-score-badge">0/100</span>
+        </div>
+        <div class="gauge-container">
+          <div class="gauge-track">
+            <div class="gauge-fill" id="res-gauge-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+        <div class="factors-list" id="res-factors-list">
+          <!-- Confidence factors -->
+        </div>
+      </section>
+
+      <!-- Element Metadata Details (Phase 1) -->
+      <section class="card details-card" id="details-card">
+        <div class="card-header">
+          <h3>Matched Element Details</h3>
+        </div>
+        <div id="elements-list-container">
+          <!-- Details for each matched element -->
+        </div>
+      </section>
+
+      <!-- Alternative Locators (Phase 5) -->
+      <section class="card alternatives-card" id="alternatives-card">
+        <div class="card-header">
+          <h3>Alternative Recommendations</h3>
+        </div>
+        <div class="alternatives-list" id="res-alternatives-list">
+          <!-- Generated alternatives -->
+        </div>
+      </section>
+
+      <!-- Phase 3 — .or() Chain Tree Visualization -->
+      <section class="card chain-card hidden" id="chain-analysis-card">
+        <div class="card-header">
+          <h3>OR Chain Analysis</h3>
+          <span class="chain-badge" id="chain-total-badge">0 total matches</span>
+        </div>
+        <div class="chain-tree" id="chain-tree">
+          <!-- branch rows rendered by JS -->
+        </div>
+      </section>
+    </div>
+
+    <!-- Phase 7 — Stability Testing (outside results-panel, always accessible when connected) -->
+    <section class="card stability-card hidden" id="stability-card">
+      <div class="card-header">
+        <h3>Stability Test</h3>
+        <div class="stability-run-selector">
+          <label for="stability-runs">Runs</label>
+          <select id="stability-runs">
+            <option value="3">3</option>
+            <option value="5" selected>5</option>
+            <option value="10">10</option>
+          </select>
+        </div>
+      </div>
+      <div class="stability-warning">
+        ⚠ This reloads the browser page N times. Unsaved changes will be lost.
+      </div>
+      <button id="stability-test-btn" class="btn btn-secondary" disabled>Run Stability Test</button>
+      <div id="stability-loader" class="loader-container hidden">
+        <div class="spinner"></div>
+        <span>Testing stability...</span>
+      </div>
+      <div id="stability-results" class="hidden">
+        <div class="stability-score-row">
+          <span class="stability-score-label">Stability Score</span>
+          <span class="stability-score-badge" id="stability-score-badge">—</span>
+        </div>
+        <div class="stability-runs-list" id="stability-runs-list">
+          <!-- run rows -->
+        </div>
+      </div>
+    </section>
+
+    <section class="card form-scanner-card hidden" id="form-scanner-card">
+      <div class="card-header">
+        <h3>Form Scanner</h3>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="badge" id="form-count-badge" style="background:var(--accent-end);">0 forms</span>
+          <button id="copy-form-locators-btn" class="btn-icon-copy hidden" title="Copy all form locators to clipboard">📋 Copy All</button>
+        </div>
+      </div>
+      <button id="scan-forms-btn" class="btn btn-secondary" disabled>Scan Page Forms</button>
+      <div id="form-scan-loader" class="loader-container hidden">
+        <div class="spinner"></div>
+        <span>Scanning forms...</span>
+      </div>
+      <div id="form-tree-container" class="form-tree hidden">
+        <!-- form structure rendered by JS -->
+      </div>
+    </section>
+
+
+  </div>
+  <script src="${scriptUri}"></script>
+</body>
+</html>
