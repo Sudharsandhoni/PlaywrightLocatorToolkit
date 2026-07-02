@@ -13,10 +13,43 @@ import {
   ChainBranch,
   StabilityResult,
   StabilityRun,
-  FormStructure
+  FormStructure,
+  UiNode,
+  UiScannerResult,
+  AccessibilityIssue,
+  LocatorHealthReport,
+  AutomationReadinessScore
 } from 'playwright-locator-lens-shared';
 
+function toCamelCase(str: string): string {
+  const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+  if (parts.length === 0) return '';
+  return parts.map((p, idx) => {
+    const cleaned = p.replace(/[^a-zA-Z0-9]/g, '');
+    if (idx === 0) {
+      return cleaned.toLowerCase();
+    }
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+  }).join('');
+}
 
+function toPascalCase(str: string): string {
+  const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+  return parts.map(p => {
+    const cleaned = p.replace(/[^a-zA-Z0-9]/g, '');
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+  }).join('');
+}
+
+function cleanNodeName(name: string): string {
+  let cleaned = name;
+  // Strip trailing common containers
+  cleaned = cleaned.replace(/(Defaults|Default|Section|Form|Card|Panel|Group|Container|Wrapper|Box)$/i, '');
+  // Strip trailing single letter suffix (e.g. Fetus A -> Fetus)
+  cleaned = cleaned.replace(/\s+[A-Z]$/, '');
+  cleaned = cleaned.replace(/([a-z])([A-Z])$/, '$1');
+  return cleaned.trim() || name;
+}
 
 export class LocatorEngine {
   private browser: Browser | null = null;
@@ -70,6 +103,36 @@ export class LocatorEngine {
       this.browser = null;
     }
     this.pages.clear();
+  }
+
+  /** Soft disconnect — drops internal state but leaves Chrome running. */
+  softDisconnect(): void {
+    this.browser = null;
+    this.pages.clear();
+  }
+
+  /** Re-list all open tabs from the currently connected browser. */
+  async getPages(): Promise<PageInfo[]> {
+    if (!this.browser) {
+      throw new Error('Not connected to a browser.');
+    }
+    this.pages.clear();
+    const contexts = this.browser.contexts();
+    const allPages: PageInfo[] = [];
+    for (const context of contexts) {
+      const contextPages = context.pages();
+      for (let idx = 0; idx < contextPages.length; idx++) {
+        const page = contextPages[idx];
+        const id = `page-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`;
+        this.pages.set(id, page);
+        let title = 'Untitled';
+        try { title = await page.title(); } catch {}
+        let url = 'about:blank';
+        try { url = page.url(); } catch {}
+        allPages.push({ id, title, url });
+      }
+    }
+    return allPages;
   }
 
   getPage(id: string): Page | undefined {
@@ -293,13 +356,12 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
 
       const type = count === 1 ? 'success' : 'warning';
 
-      // Get element handles to evaluate them in the main page context (like in Phase 1)
-      const elementHandles = await locatorInstance.elementHandles();
-      await page.evaluate(([elements, hlType, scrollIdx]: any) => {
+      // Highlight matching elements directly in the page context
+      await locatorInstance.evaluateAll((elems: any, [hlType, scrollIdx]: any) => {
         if ((window as any).__locatorLensAgent) {
-          (window as any).__locatorLensAgent.highlight(elements, hlType, scrollIdx);
+          (window as any).__locatorLensAgent.highlight(elems, hlType, scrollIdx);
         }
-      }, [elementHandles, type, scrollIndex] as const);
+      }, [type, scrollIndex] as const);
 
       return true;
     } catch {
@@ -480,6 +542,148 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
   }
 
   // ─────────────────────────────────────────────────────────────
+  // Phase 5 — Field Simulation Engine
+  // ─────────────────────────────────────────────────────────────
+
+  async simulateFill(pageId: string, locatorStr: string, value: string): Promise<boolean> {
+    const page = this.getPage(pageId);
+    if (!page) return false;
+    try {
+      await this.ensureAgentInjected(page);
+      
+      const sandbox = {
+        page,
+        locator: page.locator.bind(page),
+        getByRole: page.getByRole.bind(page),
+        getByText: page.getByText.bind(page),
+        getByLabel: page.getByLabel.bind(page),
+        getByPlaceholder: page.getByPlaceholder.bind(page),
+        getByAltText: page.getByAltText.bind(page),
+        getByTitle: page.getByTitle.bind(page),
+        getByTestId: page.getByTestId.bind(page),
+      };
+      const context = vm.createContext(sandbox);
+      const locatorInstance = vm.runInContext(locatorStr, context) as Locator;
+      const handle = await locatorInstance.elementHandle();
+      
+      if (!handle) return false;
+      
+      return await page.evaluate(([el, val]: any) => {
+        return (window as any).__locatorLensAgent.simulateFill(el, val);
+      }, [handle, value] as const);
+    } catch (err) {
+      console.error('Failed to simulate fill:', err);
+      return false;
+    }
+  }
+
+  async simulateClick(pageId: string, locatorStr: string, x?: number, y?: number): Promise<boolean> {
+    const page = this.getPage(pageId);
+    if (!page) return false;
+    try {
+      await this.ensureAgentInjected(page);
+      
+      const sandbox = {
+        page,
+        locator: page.locator.bind(page),
+        getByRole: page.getByRole.bind(page),
+        getByText: page.getByText.bind(page),
+        getByLabel: page.getByLabel.bind(page),
+        getByPlaceholder: page.getByPlaceholder.bind(page),
+        getByAltText: page.getByAltText.bind(page),
+        getByTitle: page.getByTitle.bind(page),
+        getByTestId: page.getByTestId.bind(page),
+      };
+      const context = vm.createContext(sandbox);
+      const locatorInstance = vm.runInContext(locatorStr, context) as Locator;
+      const handle = await locatorInstance.elementHandle();
+      
+      if (!handle) return false;
+      
+      return await page.evaluate(([el, clickX, clickY]: any) => {
+        return (window as any).__locatorLensAgent.simulateClick(el, clickX, clickY);
+      }, [handle, x, y] as const);
+    } catch (err) {
+      console.error('Failed to simulate click:', err);
+      return false;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Phase 6 — Bulk Stability Testing
+  // ─────────────────────────────────────────────────────────────
+
+  async bulkStabilityTest(
+    pageId: string,
+    locatorStrs: string[],
+    runs: number = 3
+  ): Promise<{ [locatorStr: string]: StabilityResult }> {
+    const page = this.getPage(pageId);
+    if (!page) {
+      throw new Error('Page not found.');
+    }
+
+    const results: { [locatorStr: string]: StabilityRun[] } = {};
+    const foundCounts: { [locatorStr: string]: number } = {};
+    locatorStrs.forEach(loc => {
+      results[loc] = [];
+      foundCounts[loc] = 0;
+    });
+
+    for (let r = 0; r < runs; r++) {
+      try {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        try {
+          await this.ensureAgentInjected(page);
+        } catch { /* best effort */ }
+
+        for (const locatorStr of locatorStrs) {
+          try {
+            const sandbox = {
+              page,
+              locator: page.locator.bind(page),
+              getByRole: page.getByRole.bind(page),
+              getByText: page.getByText.bind(page),
+              getByLabel: page.getByLabel.bind(page),
+              getByPlaceholder: page.getByPlaceholder.bind(page),
+              getByAltText: page.getByAltText.bind(page),
+              getByTitle: page.getByTitle.bind(page),
+              getByTestId: page.getByTestId.bind(page),
+            };
+            const ctx = vm.createContext(sandbox);
+            const locatorInstance = vm.runInContext(locatorStr, ctx) as Locator;
+            const count = await locatorInstance.count();
+            const found = count > 0;
+            if (found) {
+              foundCounts[locatorStr]++;
+            }
+            results[locatorStr].push({ run: r + 1, found, matchCount: count });
+          } catch (err: any) {
+            results[locatorStr].push({ run: r + 1, found: false, matchCount: 0, error: err.message });
+          }
+        }
+      } catch (err: any) {
+        locatorStrs.forEach(locatorStr => {
+          results[locatorStr].push({ run: r + 1, found: false, matchCount: 0, error: `Reload failed: ${err.message}` });
+        });
+      }
+    }
+
+    const finalResults: { [locatorStr: string]: StabilityResult } = {};
+    locatorStrs.forEach(locatorStr => {
+      const score = Math.round((foundCounts[locatorStr] / runs) * 100);
+      finalResults[locatorStr] = {
+        success: true,
+        runs: results[locatorStr],
+        score,
+        locatorStr
+      };
+    });
+
+    return finalResults;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // Phase 8 — Form-Aware Analysis
   // ─────────────────────────────────────────────────────────────
 
@@ -498,6 +702,280 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
     return forms;
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // UI Intelligence Scanner
+  // ─────────────────────────────────────────────────────────────
+
+  async scanUI(pageId: string): Promise<UiScannerResult> {
+    const page = this.getPage(pageId);
+    if (!page) {
+      throw new Error('Page not found.');
+    }
+
+    await this.ensureAgentInjected(page);
+
+    const scanResult = await page.evaluate(() => {
+      return (window as any).__locatorLensAgent.scanUI();
+    }) as UiScannerResult;
+
+    return scanResult;
+  }
+
+  generatePOMExport(tree: UiNode[], customClassName?: string, sectionNaming?: string): string {
+    const lines: string[] = [];
+    lines.push("import { Page, Locator } from '@playwright/test';\n");
+    
+    const pageNode = tree.find(n => n.type === 'page') || tree[0];
+    const rawClassName = customClassName || (pageNode ? pageNode.name : 'ScannedPage');
+    const className = toPascalCase(rawClassName) + (rawClassName.endsWith('Page') ? '' : 'Page');
+    
+    lines.push(`export class ${className} {`);
+    lines.push(`  readonly page: Page;`);
+    
+    const declarations: string[] = [];
+    const initializers: string[] = [];
+    const seenProperties = new Set<string>();
+    
+    function getUniquePropName(node: UiNode, parentNode?: UiNode): string {
+      let baseName = node.name;
+      if (node.parentSectionName) {
+        const sectionClean = cleanNodeName(node.parentSectionName);
+        if (sectionNaming === 'prefix') {
+          baseName = sectionClean + ' ' + baseName;
+        } else if (sectionNaming === 'suffix') {
+          baseName = baseName + ' ' + sectionClean;
+        }
+      }
+
+      let name = toCamelCase(cleanNodeName(baseName));
+      if (!name) name = 'element';
+      
+      if (seenProperties.has(name) && parentNode?.name) {
+        const parentClean = toPascalCase(cleanNodeName(parentNode.name));
+        name = toCamelCase(parentClean + toPascalCase(name));
+      }
+      
+      let finalName = name;
+      let counter = 2;
+      while (seenProperties.has(finalName)) {
+        finalName = `${name}${counter}`;
+        counter++;
+      }
+      seenProperties.add(finalName);
+      return finalName;
+    }
+    
+    function traverse(node: UiNode, parentVar: string = 'page', parentNode?: UiNode) {
+      const type = node.type;
+      if (type === 'section' || type === 'subsection' || type === 'dialog' || type === 'table' || type === 'grid') {
+        const varName = getUniquePropName(node, parentNode);
+        declarations.push(`  readonly ${varName}: Locator;`);
+        initializers.push(`    this.${varName} = ${parentVar}.${node.locator};`);
+        
+        node.children.forEach(c => traverse(c, `this.${varName}`, node));
+        return;
+      } else if (type === 'field' || type === 'image' || type === 'svg' || type === 'canvas' || type === 'rte') {
+        const varName = getUniquePropName(node, parentNode);
+        declarations.push(`  readonly ${varName}: Locator;`);
+        initializers.push(`    this.${varName} = ${parentVar}.${node.locator};`);
+      }
+      
+      node.children.forEach(c => traverse(c, parentVar, parentNode));
+    }
+    
+    tree.forEach(n => traverse(n));
+    
+    lines.push(declarations.join('\n'));
+    lines.push('\n  constructor(page: Page) {');
+    lines.push('    this.page = page;');
+    lines.push(initializers.join('\n'));
+    lines.push('  }');
+    lines.push('}');
+    
+    return lines.join('\n');
+  }
+
+  generateSDKExport(tree: UiNode[]): string {
+    const code = `import { Page, Locator } from '@playwright/test';
+
+export class UIAutomationSDK {
+  constructor(public readonly page: Page) {}
+
+  /**
+   * Scoped section finder
+   */
+  getSection(name: string): Locator {
+    return this.page.locator('fieldset, section, [role="region"], [role="group"], .card, .panel')
+      .filter({ has: this.page.locator('legend, h1, h2, h3, h4, h5, h6, [aria-label]').filter({ hasText: name }) })
+      .first();
+  }
+
+  /**
+   * Generic API to interact with any field by its section and label
+   */
+  async fillField(options: { section?: string; label: string; value: string }) {
+    let scope = options.section ? this.getSection(options.section) : this.page;
+    const field = scope.getByLabel(options.label)
+      .or(scope.getByPlaceholder(options.label))
+      .or(scope.getByRole('textbox', { name: options.label }))
+      .or(scope.locator('input, textarea, select').filter({ hasText: options.label }));
+    await field.first().fill(options.value);
+  }
+
+  /**
+   * Generic API to click a button in a section
+   */
+  async clickButton(options: { section?: string; label: string }) {
+    let scope = options.section ? this.getSection(options.section) : this.page;
+    const btn = scope.getByRole('button', { name: options.label })
+      .or(scope.getByText(options.label))
+      .or(scope.locator('button, a, [role="button"]').filter({ hasText: options.label }));
+    await btn.first().click();
+  }
+
+  /**
+   * Generic API to read table cells
+   */
+  async getTableCell(options: { tableSection: string; rowIndex: number; columnName: string }): Promise<string> {
+    const tableScope = this.getSection(options.tableSection);
+    const headers = await tableScope.locator('th, [role="columnheader"]').allTextContents();
+    const colIndex = headers.indexOf(options.columnName);
+    if (colIndex === -1) {
+      throw new Error(\`Column "\${options.columnName}" not found in table "\${options.tableSection}". Available columns: \${headers.join(', ')}\`);
+    }
+    const cell = tableScope.locator('tr, [role="row"]').nth(options.rowIndex + 1).locator('td, [role="gridcell"]').nth(colIndex);
+    return (await cell.innerText()).trim();
+  }
+}
+`;
+    return code;
+  }
+
+  generateTSInterfacesExport(tree: UiNode[], sectionNaming?: string): string {
+    const lines: string[] = [];
+    const seenInterfaces = new Set<string>();
+    
+    function getFieldName(f: UiNode): string {
+      let baseName = f.name;
+      if (f.parentSectionName) {
+        const sectionClean = cleanNodeName(f.parentSectionName);
+        if (sectionNaming === 'prefix') {
+          baseName = sectionClean + ' ' + baseName;
+        } else if (sectionNaming === 'suffix') {
+          baseName = baseName + ' ' + sectionClean;
+        }
+      }
+      return toCamelCase(cleanNodeName(baseName));
+    }
+
+    function traverse(node: UiNode) {
+      const fields = node.children.filter(c => c.type === 'field');
+      if (fields.length > 0) {
+        const cleanName = toPascalCase(cleanNodeName(node.name));
+        let interfaceName = cleanName + 'Data';
+        
+        let finalName = interfaceName;
+        let counter = 2;
+        while (seenInterfaces.has(finalName)) {
+          finalName = `${cleanName}${counter}Data`;
+          counter++;
+        }
+        seenInterfaces.add(finalName);
+        
+        lines.push(`export interface ${finalName} {`);
+        fields.forEach(f => {
+          const cleanFieldName = getFieldName(f);
+          if (cleanFieldName) {
+            lines.push(`  ${cleanFieldName}?: string;`);
+          }
+        });
+        lines.push('}\n');
+      }
+      node.children.forEach(c => {
+        if (c.type !== 'field') {
+          traverse(c);
+        }
+      });
+    }
+    
+    tree.forEach(n => traverse(n));
+    
+    if (lines.length === 0) {
+      lines.push('export interface PageData {\n  [key: string]: any;\n}');
+    }
+    
+    return lines.join('\n');
+  }
+
+  generateJSONSchemaExport(tree: UiNode[]): string {
+    const schema: any = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: {},
+      required: []
+    };
+
+    function traverse(node: UiNode, currentProps: any) {
+      if (node.type === 'section' || node.type === 'subsection' || node.type === 'dialog') {
+        const sectionProps: any = {
+          type: 'object',
+          properties: {},
+          required: []
+        };
+
+        const fields = node.children.filter(c => c.type === 'field');
+        fields.forEach(f => {
+          sectionProps.properties[f.name] = {
+            type: 'string',
+            description: `Field: ${f.name}, Locator: ${f.locator}`
+          };
+          if (f.meta?.required) {
+            sectionProps.required.push(f.name);
+          }
+        });
+
+        if (fields.length > 0) {
+          currentProps[node.name] = sectionProps;
+        }
+
+        node.children.forEach(c => traverse(c, sectionProps.properties));
+      } else {
+        node.children.forEach(c => traverse(c, currentProps));
+      }
+    }
+
+    tree.forEach(n => traverse(n, schema.properties));
+
+    if (Object.keys(schema.properties).length === 0) {
+      schema.properties.fields = {
+        type: 'object',
+        additionalProperties: { type: 'string' }
+      };
+    }
+
+    return JSON.stringify(schema, null, 2);
+  }
+
+  generateYAMLExport(tree: UiNode[]): string {
+    const lines: string[] = [];
+    
+    function traverse(node: UiNode, indent: number = 0) {
+      const pad = ' '.repeat(indent);
+      lines.push(`${pad}- name: "${node.name.replace(/"/g, '\\"')}"`);
+      lines.push(`${pad}  type: "${node.type}"`);
+      lines.push(`${pad}  locator: "${node.locator.replace(/"/g, '\\"')}"`);
+      if (node.children.length > 0) {
+        lines.push(`${pad}  children:`);
+        node.children.forEach(c => traverse(c, indent + 4));
+      }
+    }
+    
+    lines.push('page_structure:');
+    tree.forEach(n => traverse(n, 2));
+    
+    return lines.join('\n');
+  }
+
 
 
   private calculateConfidence(
@@ -506,87 +984,94 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
     el?: ElementDetails,
     steps?: LocatorStep[]
   ): { confidence: number; factors: { text: string; positive: boolean }[] } {
-    let score = 0;
     const factors: { text: string; positive: boolean }[] = [];
 
-    // 1. Match Count
-    if (count === 1) {
-      score += 40;
-      factors.push({ text: 'Single unique match', positive: true });
-    } else {
-      score -= 20;
-      factors.push({ text: `Multiple matches found (${count})`, positive: false });
-    }
+    // ── Step 1: Tier base score (matches browser-agent generateAlternatives tiers) ──
+    let score = 50; // default for unknown patterns
 
-    // 2. Visibility
-    if (el?.visible) {
-      score += 15;
-      factors.push({ text: 'Element is visible on screen', positive: true });
-    } else if (el) {
-      score -= 10;
-      factors.push({ text: 'Element is hidden/invisible', positive: false });
-    }
-
-    // 3. Locator API Semantic Quality
     if (locatorStr.includes('getByTestId')) {
-      score += 25;
-      factors.push({ text: 'Uses semantic data-testid locator', positive: true });
-    } else if (locatorStr.includes('getByRole') && locatorStr.includes('name:')) {
-      score += 20;
-      factors.push({ text: 'Uses getByRole with accessible name filter', positive: true });
+      score = 98;
+      factors.push({ text: 'Uses stable data-testid locator', positive: true });
     } else if (locatorStr.includes('getByLabel')) {
-      score += 20;
+      score = 95;
       factors.push({ text: 'Uses getByLabel standard form query', positive: true });
-    } else if (locatorStr.includes('getByPlaceholder') || locatorStr.includes('getByTitle') || locatorStr.includes('getByAltText')) {
-      score += 15;
-      factors.push({ text: 'Uses accessible placeholder/title/alt text', positive: true });
+    } else if (locatorStr.includes('getByRole') && (locatorStr.includes('name:') || locatorStr.includes('name :'))) {
+      score = 92;
+      factors.push({ text: 'Uses getByRole with accessible name filter', positive: true });
+    } else if (locatorStr.includes('getByPlaceholder') || locatorStr.includes('getByAltText') || locatorStr.includes('getByTitle')) {
+      score = 85;
+      factors.push({ text: 'Uses accessible attribute locator', positive: true });
     } else if (locatorStr.includes('getByText')) {
-      score += 12;
-      factors.push({ text: 'Uses getByText search', positive: true });
+      score = 80;
+      factors.push({ text: 'Uses getByText content match', positive: true });
+    } else if (locatorStr.includes('getByRole')) {
+      score = 75;
+      factors.push({ text: 'Uses getByRole without name filter', positive: true });
     } else if (locatorStr.includes('locator(')) {
-      // Check if it is a CSS ID or CSS selector or XPath
       const cssMatch = locatorStr.match(/locator\(\s*['"`](.*?)['"`]\s*\)/);
       if (cssMatch) {
         const selector = cssMatch[1];
         if (selector.startsWith('#') && !selector.includes(' ') && !selector.includes('>')) {
-          score += 15;
+          score = 85;
           factors.push({ text: 'Uses CSS ID locator', positive: true });
         } else if (selector.startsWith('//') || selector.startsWith('xpath=')) {
-          score -= 15;
+          score = 40;
           factors.push({ text: 'Uses XPath locator (fragile to structure)', positive: false });
         } else {
-          score += 5;
+          score = 55;
           factors.push({ text: 'Uses CSS path selector', positive: false });
         }
       }
     }
 
-    // 4. Stability Check (Dynamic ID penalty)
+    // ── Step 2: Evaluation adjustments (±) ──
+
+    // Match uniqueness: being unique is ideal; multiple matches = worse
+    if (count === 1) {
+      factors.push({ text: 'Single unique match', positive: true });
+      // No penalty/bonus — uniqueness is expected at this tier
+    } else if (count > 1) {
+      score = Math.max(0, score - 15);
+      factors.push({ text: `Multiple matches found (${count}) — not unique`, positive: false });
+    } else {
+      // count === 0 shouldn't reach here, but guard anyway
+      score = 0;
+      factors.push({ text: 'No matching elements found', positive: false });
+    }
+
+    // Visibility
+    if (el?.visible) {
+      factors.push({ text: 'Element is visible on screen', positive: true });
+    } else if (el) {
+      score = Math.max(0, score - 8);
+      factors.push({ text: 'Element is hidden/invisible', positive: false });
+    }
+
+    // Dynamic/generated ID penalty (only if locator actually uses the ID)
     if (el?.id) {
-      const isDynamic = /(mui|ag-|grid-|ng-|val-|id-|ember|k-|dx-)/i.test(el.id) || 
-                        /^[0-9]+$/.test(el.id) || 
+      const isDynamic = /(mui|ag-|grid-|ng-|val-|id-|ember|k-|dx-)/i.test(el.id) ||
+                        /^[0-9]+$/.test(el.id) ||
                         /[0-9]{4,}/.test(el.id);
       if (isDynamic && locatorStr.includes(`#${el.id}`)) {
-        score -= 25;
+        score = Math.max(0, score - 20);
         factors.push({ text: 'Uses generated/dynamic element ID', positive: false });
       }
     }
 
-    // 5. Index-based fragilities (nth, first, last, nth-child)
+    // Index-based fragility
     if (/\.(nth|first|last)\(/.test(locatorStr) || locatorStr.includes(':nth-child') || locatorStr.includes(':nth-of-type')) {
-      score -= 15;
+      score = Math.max(0, score - 12);
       factors.push({ text: 'Uses index filters (fragile to page list changes)', positive: false });
     }
 
-    // 6. Fragile / Excessively long text/CSS patterns check
+    // Excessively long or CSS-polluted text patterns
     const fragileCheck = this.hasFragileNameFilter(steps);
     if (fragileCheck.fragile) {
-      score -= 60;
+      score = Math.max(0, score - 40);
       factors.push({ text: fragileCheck.reason, positive: false });
     }
 
-    // Normalize final score to [0, 100]
-    const confidence = Math.max(0, Math.min(100, score));
+    const confidence = Math.max(0, Math.min(100, Math.round(score)));
     return { confidence, factors };
   }
 

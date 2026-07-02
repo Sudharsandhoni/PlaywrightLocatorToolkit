@@ -11,11 +11,7 @@
     <!-- Header -->
     <header class="app-header">
       <div class="logo">
-        <svg class="lens-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
-          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
-          <path d="M18.5 5.5L21 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-        </svg>
+        <img src="${logoUri}" alt="Logo" class="logo-image">
         <span class="gradient-text">Locator Lens</span>
       </div>
       <div class="badge">MVP</div>
@@ -31,15 +27,21 @@
       <div class="connection-inputs" id="connection-inputs-group">
         <div class="input-group">
           <label for="cdp-url">CDP URL</label>
-          <input type="text" id="cdp-url" value="http://localhost:9222" placeholder="http://localhost:9222">
+          <input type="text" id="cdp-url" value="http://127.0.0.1:9222" placeholder="http://127.0.0.1:9222">
         </div>
-        <button id="connect-btn" class="btn btn-primary">Connect</button>
+        <div style="display: flex; gap: 8px; width: 100%;">
+          <button id="connect-btn" class="btn btn-primary" style="flex: 1;">Connect</button>
+          <button id="launch-btn" class="btn btn-secondary" style="flex: 1;" title="Launch Google Chrome with debugging port 9222 enabled">Launch Browser</button>
+        </div>
       </div>
 
       <div class="connected-info hidden" id="connected-info">
         <div class="input-group">
           <label for="tab-select">Active Page/Tab</label>
-          <select id="tab-select"></select>
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <select id="tab-select" style="flex: 1;"></select>
+            <button id="refresh-tabs-btn" class="btn-icon" title="Refresh tab list (picks up newly opened tabs)">⟳</button>
+          </div>
         </div>
         <button id="disconnect-btn" class="btn btn-secondary">Disconnect</button>
       </div>
@@ -123,7 +125,10 @@
       <!-- Confidence Meter (Phase 4) -->
       <section class="card confidence-card">
         <div class="card-header">
-          <h3>Confidence Score</h3>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <h3>Confidence Score</h3>
+            <span class="info-icon" title="Score for the locator you typed. Starts from the locator type's baseline (e.g. getByRole+name = 92) then adjusts for actual evaluation results: −15 if multiple elements matched, −8 if hidden, −12 if index-based. A lower score than the alternative means your locator is less unique or reliable.">ℹ</span>
+          </div>
           <span class="score-badge" id="res-score-badge">0/100</span>
         </div>
         <div class="gauge-container">
@@ -149,7 +154,10 @@
       <!-- Alternative Locators (Phase 5) -->
       <section class="card alternatives-card" id="alternatives-card">
         <div class="card-header">
-          <h3>Alternative Recommendations</h3>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <h3>Alternative Recommendations</h3>
+            <span class="info-icon" title="These are alternative locators generated from the matched element's properties (role, label, placeholder, ID, etc.). Their % score is the baseline quality tier for that locator type — not adjusted for match count. Use these as better options if your evaluated locator has multiple matches.">ℹ</span>
+          </div>
         </div>
         <div class="alternatives-list" id="res-alternatives-list">
           <!-- Generated alternatives -->
@@ -200,21 +208,176 @@
       </div>
     </section>
 
-    <section class="card form-scanner-card hidden" id="form-scanner-card">
+    <!-- UI Intelligence Platform Scanner -->
+    <section class="card ui-scanner-card hidden" id="ui-scanner-card">
       <div class="card-header">
-        <h3>Form Scanner</h3>
+        <h3>UI Intelligence Scanner</h3>
         <div style="display:flex;align-items:center;gap:6px;">
-          <span class="badge" id="form-count-badge" style="background:var(--accent-end);">0 forms</span>
-          <button id="copy-form-locators-btn" class="btn-icon-copy hidden" title="Copy all form locators to clipboard">📋 Copy All</button>
+          <span class="badge" id="ui-readiness-badge" style="background:var(--accent-end);font-size:10px;">— % Readiness</span>
         </div>
       </div>
-      <button id="scan-forms-btn" class="btn btn-secondary" disabled>Scan Page Forms</button>
-      <div id="form-scan-loader" class="loader-container hidden">
+      
+      <button id="scan-ui-btn" class="btn btn-primary" disabled>Scan Page UI & Abstractions</button>
+      
+      <div id="ui-scan-loader" class="loader-container hidden">
         <div class="spinner"></div>
-        <span>Scanning forms...</span>
+        <span>Analyzing UI Structure & Accessibility...</span>
       </div>
-      <div id="form-tree-container" class="form-tree hidden">
-        <!-- form structure rendered by JS -->
+
+      <div id="ui-scan-results-container" class="ui-scan-results hidden">
+        
+        <!-- UI Scanner Section Tabs -->
+        <div class="ui-tabs">
+          <button class="ui-tab-btn active" data-tab="ui-tab-tree">Semantic Tree</button>
+          <button class="ui-tab-btn" data-tab="ui-tab-accessibility">Accessibility Audit</button>
+          <button class="ui-tab-btn" data-tab="ui-tab-health">Readiness & Metrics</button>
+          <button class="ui-tab-btn" data-tab="ui-tab-export">Export SDK/POM</button>
+        </div>
+
+        <!-- Tab 1: Semantic Tree -->
+        <div class="ui-tab-content active" id="ui-tab-tree">
+          <div class="tree-toolbar" style="display:flex;gap:6px;margin-bottom:6px;">
+            <button id="tree-expand-all-btn" class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Expand All</button>
+            <button id="tree-collapse-all-btn" class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Collapse All</button>
+            <button id="tree-stability-test-btn" class="btn btn-secondary" style="padding:4px 8px;font-size:10px;" disabled>⚡ Test Stability</button>
+          </div>
+          <div id="ui-tree-container" class="ui-tree-view">
+            <!-- Tree dynamically rendered -->
+          </div>
+          
+          <!-- Node Detail Preview panel (selected node details) -->
+          <div id="ui-node-detail-panel" class="node-detail-panel hidden">
+            <h4>Node Details</h4>
+            <div id="ui-node-detail-content"></div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Accessibility Audit -->
+        <div class="ui-tab-content" id="ui-tab-accessibility">
+          <div class="accessibility-summary">
+            <span id="accessibility-summary-text">No issues detected.</span>
+          </div>
+          <div id="accessibility-issues-list" class="accessibility-list">
+            <!-- Accessibility items -->
+          </div>
+        </div>
+
+        <!-- Tab 3: Readiness & Metrics -->
+        <div class="ui-tab-content" id="ui-tab-health">
+          <div class="readiness-gauge-card">
+            <div class="readiness-radial">
+              <span id="readiness-score-text">0%</span>
+              <span class="readiness-label">Automation Readiness</span>
+            </div>
+            <div class="readiness-factors" id="readiness-factors-list">
+              <!-- Factors list -->
+            </div>
+          </div>
+
+          <div class="health-metrics-grid">
+            <div class="metric-item">
+              <span class="metric-val" id="metric-total-locators">0</span>
+              <span class="metric-label">Total Classified Nodes</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-val" id="metric-stable-locators" style="color:var(--color-success)">0</span>
+              <span class="metric-label">Stable Locators</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-val" id="metric-fragile-locators" style="color:var(--color-danger)">0</span>
+              <span class="metric-label">Fragile / XPath Locators</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-val" id="metric-dynamic-ids" style="color:var(--color-warning)">0</span>
+              <span class="metric-label">Dynamic IDs Found</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Export targets -->
+        <div class="ui-tab-content" id="ui-tab-export">
+          <div class="export-controls">
+            <div class="input-group" style="flex-grow: 1;">
+              <label for="export-format-select">Target Format</label>
+              <select id="export-format-select">
+                <option value="pom">Page Object Model (POM)</option>
+                <option value="sdk">Automation SDK wrapper</option>
+                <option value="ts">TypeScript Data Interfaces</option>
+                <option value="json">JSON Schema model</option>
+                <option value="yaml">YAML UI Model representation</option>
+              </select>
+            </div>
+            <button id="copy-export-btn" class="btn btn-secondary" style="align-self: flex-end; height: 35px;">📋 Copy Code</button>
+          </div>
+
+          <div class="export-config-group" style="display:flex; gap:8px;">
+            <div class="input-group" style="flex-grow: 1;">
+              <label for="export-class-name">Page / Class Name</label>
+              <input type="text" id="export-class-name" placeholder="PatientPage" style="font-size: 12px; padding: 6px;">
+            </div>
+            <div class="input-group" style="flex-grow: 1;">
+              <label for="export-section-naming">Bypassed Section Naming</label>
+              <select id="export-section-naming" style="font-size: 12px; padding: 6px; height: 31px;">
+                <option value="none" selected>None (No change)</option>
+                <option value="prefix">Prefix Section Name</option>
+                <option value="suffix">Suffix Section Name</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="export-selections-container">
+            <!-- Filter Elements on top -->
+            <div style="display:flex; flex-direction:column; gap:4px; margin-bottom:8px;">
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <span style="font-size:10px; font-weight:600; text-transform:uppercase; color:var(--text-muted);">Filter Elements</span>
+                <div class="filter-actions">
+                  <button id="filter-select-all-btn" class="btn-icon-copy" style="font-size:9px; padding: 1px 4px;">Select All</button>
+                  <button id="filter-clear-all-btn" class="btn-icon-copy" style="font-size:9px; padding: 1px 4px;">Clear All</button>
+                </div>
+              </div>
+              <div class="export-type-checkboxes" style="display:grid; grid-template-columns:1fr 1fr; gap:4px; font-size:10px; background:rgba(0,0,0,0.1); padding:6px; border-radius:4px; border:1px solid var(--border-color);">
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-input" checked> Inputs</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-textarea" checked> Textareas</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-checkbox" checked> Checkboxes/Radios</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-select" checked> Dropdowns</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-button" checked> Buttons/Links</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-table" checked> Tables/Grids</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-dialog" checked> Dialogs</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-section" checked> Sections</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-label" checked> Labels/Titles</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-svg" checked> SVGs/Canvas</label>
+                <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="filter-node-image" checked> Images</label>
+              </div>
+            </div>
+
+            <!-- View Mode Toggle -->
+            <div style="display:flex; align-items:center; justify-content:space-between; border-bottom: 1px solid var(--border-color); padding-bottom:6px; margin-bottom:8px;">
+              <span style="font-size:10px; font-weight:600; text-transform:uppercase; color:var(--text-muted);">View Structure</span>
+              <div class="view-mode-toggle" style="display:flex; gap:2px; background:rgba(0,0,0,0.2); padding:2px; border-radius:4px;">
+                <button id="view-mode-tree" class="btn btn-secondary active" style="padding:2px 6px; font-size:9px; border:none; border-radius:3px;">Semantic Tree</button>
+                <button id="view-mode-locator" class="btn btn-secondary" style="padding:2px 6px; font-size:9px; border:none; border-radius:3px;">Group by Locator</button>
+              </div>
+            </div>
+
+            <!-- Select Elements to Export -->
+            <div class="export-selection-header" style="margin-top:12px;">
+              <h4>Select Elements to Export</h4>
+              <div class="selection-actions">
+                <button id="export-select-all-btn" class="btn-icon-copy" style="font-size:10px; padding: 2px 4px;">Select All</button>
+                <button id="export-clear-all-btn" class="btn-icon-copy" style="font-size:10px; padding: 2px 4px;">Clear All</button>
+              </div>
+            </div>
+
+            <div id="export-tree-selector" class="export-tree-selector">
+              <!-- Checked sections and fields rendered by JS -->
+            </div>
+          </div>
+
+          <div class="export-preview-container">
+            <pre><code id="export-code-preview" class="language-typescript">// Click "Scan" and choose format to view output</code></pre>
+          </div>
+        </div>
+
       </div>
     </section>
 

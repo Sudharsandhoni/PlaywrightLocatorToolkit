@@ -109,3 +109,44 @@ export interface FormStructure {
     sections: FormSection[];
     ungroupedFields: FormField[];
 }
+export interface UiNode {
+    id: string;
+    type: 'page' | 'section' | 'subsection' | 'field' | 'table' | 'grid' | 'dialog' | 'popup' | 'tab' | 'window' | 'image' | 'svg' | 'canvas' | 'rte' | 'menu' | 'toolbar' | 'navigation';
+    name: string;
+    tagName: string;
+    role?: string;
+    locator: string;
+    boundingBox?: BoundingBox;
+    meta?: Record<string, any>;
+    parentSectionName?: string;
+    children: UiNode[];
+}
+export interface AccessibilityIssue {
+    elementId?: string;
+    tagName: string;
+    role?: string;
+    description: string;
+    severity: 'warning' | 'error';
+    type: 'duplicate-label' | 'missing-label' | 'missing-role' | 'invalid-aria' | 'hidden-interactive';
+    suggestedLocator?: string;
+}
+export interface LocatorHealthReport {
+    totalLocators: number;
+    stableLocators: number;
+    fragileLocators: number;
+    dynamicIdsFound: number;
+    duplicateLabels: number;
+}
+export interface AutomationReadinessScore {
+    score: number;
+    factors: {
+        text: string;
+        positive: boolean;
+    }[];
+}
+export interface UiScannerResult {
+    tree: UiNode[];
+    accessibilityIssues: AccessibilityIssue[];
+    healthReport: LocatorHealthReport;
+    readinessScore: AutomationReadinessScore;
+}

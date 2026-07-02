@@ -4,6 +4,7 @@
   "description": "Live Playwright Locator Validation & Analysis in VS Code",
   "version": "0.1.0",
   "publisher": "playwright-tools",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -31,6 +32,31 @@
           "name": "Playwright Locator Lens"
         }
       ]
+    },
+    "configuration": {
+      "title": "Playwright Locator Lens",
+      "properties": {
+        "playwright-locator-lens.browserPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: Custom path to Google Chrome/Chromium executable. If empty, the extension will attempt to auto-detect Google Chrome."
+        },
+        "playwright-locator-lens.debuggingPort": {
+          "type": "integer",
+          "default": 9222,
+          "description": "The port to use for Chrome remote debugging."
+        },
+        "playwright-locator-lens.enableBetaFeatures": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable advanced beta features: Stability testing, action simulation, POM/SDK exports, etc."
+        },
+        "playwright-locator-lens.cleanBrowserProfile": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, deletes the browser's temporary user profile directory on exit. If false, persists it for fast launch."
+        }
+      }
     }
   },
   "scripts": {

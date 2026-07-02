@@ -39,6 +39,10 @@ var vscode2 = __toESM(require("vscode"));
 // src/sidebarProvider.ts
 var vscode = __toESM(require("vscode"));
 var fs = __toESM(require("fs"));
+var path = __toESM(require("path"));
+var os = __toESM(require("os"));
+var child_process = __toESM(require("child_process"));
+var http = __toESM(require("http"));
 
 // ../engine/src/index.ts
 var vm = __toESM(require("vm"));
@@ -239,7 +243,31 @@ var Parser = class {
     if (token.type === "LBRACE") {
       return this.parseObject();
     }
+    if (token.type === "IDENTIFIER") {
+      return this.parseNestedLocator();
+    }
     throw new Error(`Unsupported expression type: ${token.type}`);
+  }
+  parseNestedLocator() {
+    let hasPagePrefix = false;
+    const steps = [];
+    if (this.peek().type === "IDENTIFIER" && this.peek().value === "page") {
+      this.consume();
+      hasPagePrefix = true;
+      if (this.peek().type === "DOT") {
+        this.consume();
+      }
+    }
+    while (this.peek().type === "IDENTIFIER") {
+      const step = this.parseMethodCall();
+      steps.push(step);
+      if (this.peek().type === "DOT") {
+        this.consume();
+      } else {
+        break;
+      }
+    }
+    return { type: "nested_locator", steps, hasPagePrefix };
   }
   parseObject() {
     this.consume("LBRACE");
@@ -289,6 +317,9 @@ function stringifyArgument(arg) {
     return arg.toString();
   }
   if (arg && typeof arg === "object") {
+    if (arg.type === "nested_locator") {
+      return stringifyLocator(arg.steps, arg.hasPagePrefix);
+    }
     if (arg.source !== void 0 && arg.flags !== void 0) {
       return `/${arg.source}/${arg.flags}`;
     }
@@ -526,7 +557,7 @@ var AGENT_SCRIPT = `
       cleaned = cleaned.slice(0, indexVar);
     }
     cleaned = cleaned.trim();
-    return cleaned.replace(/[s,;]+$/, '');
+    return cleaned.replace(/[\\s,;]+$/, '');
   }
 
   function getCssPath(el) {
@@ -553,6 +584,50 @@ var AGENT_SCRIPT = `
       current = current.parentElement;
     }
     return path.join(' > ');
+  }
+
+  function getGraphicsMeta(el) {
+    if (!el) return null;
+    const tagName = el.tagName.toLowerCase();
+    if (tagName !== 'svg' && tagName !== 'canvas') return null;
+
+    const rect = el.getBoundingClientRect();
+    const parentRect = el.offsetParent ? el.offsetParent.getBoundingClientRect() : rect;
+    const centerClickPoint = {
+      x: Math.round(rect.left + window.scrollX + rect.width / 2),
+      y: Math.round(rect.top + window.scrollY + rect.height / 2)
+    };
+    const boundingOffsets = {
+      left: Math.round(rect.left - parentRect.left),
+      top: Math.round(rect.top - parentRect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+
+    let subElements = [];
+    if (tagName === 'svg') {
+      const shapes = Array.from(el.querySelectorAll('path, circle, rect, ellipse, line, polyline, polygon, text, g'));
+      subElements = shapes.map(child => {
+        const childRect = child.getBoundingClientRect();
+        return {
+          tagName: child.tagName,
+          id: child.id || undefined,
+          className: (child.className && typeof child.className === 'object') ? child.className.baseVal : (child.className || undefined),
+          relativeBox: {
+            x: Math.round(childRect.left - rect.left),
+            y: Math.round(childRect.top - rect.top),
+            width: Math.round(childRect.width),
+            height: Math.round(childRect.height)
+          }
+        };
+      }).filter(s => s.relativeBox.width > 0 && s.relativeBox.height > 0);
+    }
+
+    return {
+      centerClickPoint,
+      boundingOffsets,
+      subElements: subElements.slice(0, 10)
+    };
   }
 
   window.__locatorLensAgent = {
@@ -631,6 +706,11 @@ var AGENT_SCRIPT = `
     getElementInfo(el) {
       if (!el) return null;
       const rect = el.getBoundingClientRect();
+      const tagName = el.tagName.toLowerCase();
+      let meta = {};
+      if (tagName === 'svg' || tagName === 'canvas') {
+        meta = getGraphicsMeta(el) || {};
+      }
       return {
         role: getElementRole(el),
         accessibleName: getAccessibleName(el),
@@ -645,7 +725,8 @@ var AGENT_SCRIPT = `
           y: rect.top + window.scrollY,
           width: rect.width,
           height: rect.height
-        }
+        },
+        meta
       };
     },
 
@@ -693,8 +774,14 @@ var AGENT_SCRIPT = `
           if (isFragileName(name)) {
             const cleaned = cleanAccessibleName(name);
             if (cleaned && !isFragileName(cleaned)) {
+              const bs = String.fromCharCode(92);
+              const dbs = String.fromCharCode(92, 92);
+              let escaped = cleaned.split(bs).join(dbs);
+              ['-', '/', '^', '$', '*', '+', '?', '.', '(', ')', '|', '[', ']', '{', '}'].forEach(c => {
+                escaped = escaped.split(c).join(bs + c);
+              });
               alternatives.push({
-                selector: "getByRole('" + role + "', { name: /" + cleaned.replace(/[-/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&') + "/i })",
+                selector: "getByRole('" + role + "', { name: /" + escaped + "/i })",
                 type: 'getByRole',
                 confidence: 80,
                 reason: 'Semantic query matching role and cleaned partial accessible name.'
@@ -708,7 +795,7 @@ var AGENT_SCRIPT = `
             });
           } else {
             alternatives.push({
-              selector: "getByRole('" + role + "', { name: '" + name.replace(/'/g, "\\'") + "' })",
+              selector: "getByRole('" + role + "', { name: '" + name.replace(/'/g, "\\\\'") + "' })",
               type: 'getByRole',
               confidence: 92,
               reason: 'Semantic query matching role and accessible name.'
@@ -734,13 +821,13 @@ var AGENT_SCRIPT = `
         });
       }
 
-      // 5. getByText (Buttons, Headings, Links)
-      if (name && ['button', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(el.tagName.toLowerCase()) && name.length < 40 && !isFragileName(name)) {
+      // 5. getByText (Buttons, Headings, Links, Labels)
+      if (name && ['button', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label'].includes(el.tagName.toLowerCase()) && name.length < 40 && !isFragileName(name)) {
         alternatives.push({
-          selector: "getByText('" + name.replace(/'/g, "\\'") + "')",
+          selector: "getByText('" + name.replace(/'/g, "\\\\'") + "')",
           type: 'getByText',
           confidence: 80,
-          reason: 'Matches text content for interactive/heading elements.'
+          reason: 'Matches text content for interactive/heading/label elements.'
         });
       }
 
@@ -828,10 +915,191 @@ var AGENT_SCRIPT = `
       };
     },
 
+    simulateFill(el, value) {
+      if (!el) return false;
+      
+      // Focus element
+      el.focus();
+      
+      const tagName = el.tagName.toLowerCase();
+      const role = el.getAttribute('role') || '';
+      
+      // 1. Text Inputs / Textareas / contenteditable / textboxes
+      if (tagName === 'input' || tagName === 'textarea' || el.hasAttribute('contenteditable') || role === 'textbox') {
+        const isContentEditable = el.hasAttribute('contenteditable') || el.contentEditable === 'true';
+        
+        if (!isContentEditable) {
+          el.value = '';
+        } else {
+          el.innerHTML = '';
+        }
+        
+        for (let i = 0; i < value.length; i++) {
+          const char = value[i];
+          const keyOpts = { key: char, keyCode: char.charCodeAt(0), bubbles: true, cancelable: true };
+          
+          el.dispatchEvent(new KeyboardEvent('keydown', keyOpts));
+          el.dispatchEvent(new KeyboardEvent('keypress', keyOpts));
+          
+          if (!isContentEditable) {
+            el.value += char;
+          } else {
+            const textNode = document.createTextNode(char);
+            el.appendChild(textNode);
+            const range = document.createRange();
+            const sel = window.getSelection();
+            range.selectNodeContents(el);
+            range.collapse(false);
+            sel?.removeAllRanges();
+            sel?.addRange(range);
+          }
+          
+          el.dispatchEvent(new InputEvent('input', { data: char, bubbles: true, cancelable: true }));
+          el.dispatchEvent(new KeyboardEvent('keyup', keyOpts));
+        }
+        
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.blur();
+        return true;
+      }
+      
+      // 2. Select lists
+      if (tagName === 'select') {
+        const options = Array.from(el.options);
+        const match = options.find(o => o.value === value || o.text.trim().toLowerCase().includes(value.toLowerCase()));
+        if (match) {
+          el.value = match.value;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
+      }
+      
+      // 3. Custom comboboxes / dropdowns
+      if (role === 'combobox' || el.classList.contains('select2') || el.classList.contains('choices')) {
+        const rect = el.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        
+        el.dispatchEvent(new MouseEvent('mousedown', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('click', { clientX, clientY, bubbles: true, cancelable: true }));
+        
+        setTimeout(() => {
+          const activeInput = document.activeElement;
+          if (activeInput && activeInput !== el) {
+            this.simulateFill(activeInput, value);
+          }
+        }, 50);
+        return true;
+      }
+      
+      // 4. General Fallback
+      try {
+        const rect = el.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        
+        el.dispatchEvent(new MouseEvent('mousedown', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('click', { clientX, clientY, bubbles: true, cancelable: true }));
+        
+        if (value) {
+          el.textContent = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+    simulateClick(el, x, y) {
+      if (!el) return false;
+      try {
+        const rect = el.getBoundingClientRect();
+        const clientX = rect.left + (x !== undefined && x !== null ? Number(x) : rect.width / 2);
+        const clientY = rect.top + (y !== undefined && y !== null ? Number(y) : rect.height / 2);
+        
+        el.dispatchEvent(new MouseEvent('mouseenter', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mousedown', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('click', { clientX, clientY, bubbles: true, cancelable: true }));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
     // Phase 8 \u2014 Form-Aware Analysis
     scanForms() {
       const FIELD_TAGS = ['input', 'select', 'textarea'];
       const SKIP_INPUT_TYPES = ['hidden', 'submit', 'reset', 'button', 'image'];
+
+      // Improved section title detection
+      function getSectionTitle(sectionEl) {
+        const tag = sectionEl.tagName.toLowerCase();
+
+        // 1. <legend> inside <fieldset>
+        if (tag === 'fieldset') {
+          const legend = sectionEl.querySelector('legend');
+          if (legend) {
+            const t = getCleanText(legend).trim();
+            if (t) return t;
+          }
+        }
+
+        // 2. aria-labelledby
+        const labelledBy = sectionEl.getAttribute('aria-labelledby');
+        if (labelledBy) {
+          const ids = labelledBy.split(/\\s+/);
+          const parts = ids.map(id => {
+            const target = document.getElementById(id);
+            return target ? getCleanText(target).trim() : '';
+          }).filter(Boolean);
+          if (parts.length > 0) return parts.join(' ');
+        }
+
+        // 3. aria-label
+        const ariaLabel = sectionEl.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+
+        // 4. data-label or data-title attribute
+        const dataLabel = sectionEl.getAttribute('data-label') || sectionEl.getAttribute('data-title');
+        if (dataLabel && dataLabel.trim()) return dataLabel.trim();
+
+        // 5. First heading (h1-h6) inside the section
+        const heading = sectionEl.querySelector('h1,h2,h3,h4,h5,h6');
+        if (heading) {
+          const t = getCleanText(heading).trim();
+          if (t && t.length < 80) return t;
+        }
+
+        // 6. Preceding sibling heading (immediately before this section in the DOM)
+        let prev = sectionEl.previousElementSibling;
+        while (prev) {
+          const prevTag = prev.tagName.toLowerCase();
+          if (/^h[1-6]$/.test(prevTag)) {
+            const t = getCleanText(prev).trim();
+            if (t && t.length < 80) return t;
+            break;
+          }
+          // Stop if prev sibling is another form element (it's not the heading for this section)
+          if (['form', 'fieldset', 'section', 'div'].includes(prevTag)) {
+            const innerHeading = prev.querySelector('h1,h2,h3,h4,h5,h6');
+            if (!innerHeading) break; // no heading in sibling block, give up
+            break;
+          }
+          prev = prev.previousElementSibling;
+        }
+
+        // 7. id-based fallback
+        if (sectionEl.id) return sectionEl.id;
+
+        // 8. Generic fallback
+        return tag === 'fieldset' ? 'Fieldset' : '';
+      }
 
       function buildField(el) {
         const tag = el.tagName.toLowerCase();
@@ -845,32 +1113,46 @@ var AGENT_SCRIPT = `
         const name = el.getAttribute('name') || undefined;
         const placeholder = el.getAttribute('placeholder') || undefined;
         const required = el.hasAttribute('required') || el.getAttribute('aria-required') === 'true';
+        const isReadOnly = el.hasAttribute('readonly') || el.getAttribute('aria-readonly') === 'true';
 
-        // Build the best suggested locator
+        // Build the best suggested locator \u2014 prefer semantic, human-readable selectors
         let suggestedLocator = '';
+
         if (label && !isFragileName(label)) {
-          suggestedLocator = "getByLabel('" + label.replace(/'/g, "\\'") + "')";
-        } else if (placeholder) {
-          suggestedLocator = "getByPlaceholder('" + placeholder.replace(/'/g, "\\'") + "')";
-        } else if (role && role !== 'generic' && label) {
-          suggestedLocator = "getByRole('" + role + "', { name: '" + label.replace(/'/g, "\\'") + "' })";
+          // Best: getByLabel (most stable for form fields)
+          suggestedLocator = "getByLabel('" + label.replace(/'/g, "\\\\'") + "')";
+        } else if (placeholder && !isFragileName(placeholder)) {
+          // Good: getByPlaceholder
+          suggestedLocator = "getByPlaceholder('" + placeholder.replace(/'/g, "\\\\'") + "')";
+        } else if (role && role !== 'generic') {
+          // Use getByRole with accessible name if available
+          const accName = getAccessibleName(el);
+          const cleanName = accName ? cleanAccessibleName(accName) : '';
+          if (cleanName && !isFragileName(cleanName)) {
+            suggestedLocator = "getByRole('" + role + "', { name: '" + cleanName.replace(/'/g, "\\\\'") + "' })";
+          } else {
+            // Role without name \u2014 add type context for inputs
+            if (tag === 'input' && inputType && inputType !== 'text') {
+              suggestedLocator = "locator('input[type=\\"" + inputType + "\\"]')";
+            } else {
+              suggestedLocator = "getByRole('" + role + "')";
+            }
+          }
         } else if (id && !isDynamicId(id)) {
+          // Stable ID
           suggestedLocator = "locator('#" + id + "')";
+        } else if (name && !isDynamicId(name)) {
+          // Use name attribute as a reliable selector
+          suggestedLocator = "locator('[name=\\"" + name + "\\"]')";
+        } else if (tag === 'input' && inputType) {
+          // Input with type
+          suggestedLocator = "locator('input[type=\\"" + inputType + "\\"]')";
         } else {
+          // Last resort: bare tag
           suggestedLocator = "locator('" + tag + "')";
         }
 
-        return { label, tagName: tag, role, inputType, id, name, placeholder, required, suggestedLocator };
-      }
-
-      function buildSection(container, title) {
-        const fields = [];
-        const fieldEls = Array.from(container.querySelectorAll(FIELD_TAGS.join(',')));
-        fieldEls.forEach(el => {
-          const f = buildField(el);
-          if (f) fields.push(f);
-        });
-        return { title, fields };
+        return { label, tagName: tag, role, inputType, id, name, placeholder, required, isReadOnly, suggestedLocator };
       }
 
       const results = [];
@@ -899,14 +1181,7 @@ var AGENT_SCRIPT = `
         const coveredFields = new Set();
 
         allSectionEls.forEach(sectionEl => {
-          // Section title: <legend> for fieldset, aria-label/aria-labelledby for groups
-          let title = '';
-          if (sectionEl.tagName.toLowerCase() === 'fieldset') {
-            const legend = sectionEl.querySelector('legend');
-            title = legend ? getCleanText(legend).trim() : 'Fieldset';
-          } else {
-            title = getAccessibleName(sectionEl) || sectionEl.getAttribute('aria-label') || 'Group';
-          }
+          const title = getSectionTitle(sectionEl) || 'Section';
 
           const sectionFields = [];
           const fieldEls = Array.from(sectionEl.querySelectorAll(FIELD_TAGS.join(',')));
@@ -937,12 +1212,468 @@ var AGENT_SCRIPT = `
       });
 
       return results;
+    },
+
+    // UI Scanner
+    scanUI() {
+      // Programmatically expand collapsible elements on the page before scanning
+      try {
+        document.querySelectorAll('details').forEach(d => {
+          if (!d.open) d.open = true;
+        });
+
+        const toggles = Array.from(document.querySelectorAll('[aria-expanded="false"], [class*="collapse" i][role="button"], [class*="accordion" i][role="button"], .accordion-header, [class*="toggle" i]'));
+        toggles.forEach(t => {
+          const tag = t.tagName.toLowerCase();
+          if (tag === 'a' && (t.getAttribute('href') || '').startsWith('http')) return;
+          if (tag === 'input' || tag === 'form') return;
+          try {
+            t.click();
+          } catch(e) {}
+        });
+      } catch (e) {
+        console.warn('Failed to expand page sections:', e);
+      }
+
+      const allElements = Array.from(document.querySelectorAll('*'));
+
+      function isFormWidget(el) {
+        const classStr = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : '';
+        const idStr = (el.id && typeof el.id === 'string') ? el.id.toLowerCase() : '';
+        if (classStr.includes('picker') || classStr.includes('date') || classStr.includes('time') || 
+            classStr.includes('calendar') || classStr.includes('clock') || classStr.includes('datetime') ||
+            idStr.includes('picker') || idStr.includes('date') || idStr.includes('time') || 
+            idStr.includes('calendar') || idStr.includes('clock') || idStr.includes('datetime')) {
+          return true;
+        }
+        if (el.getAttribute('aria-haspopup') === 'dialog' || el.getAttribute('aria-haspopup') === 'grid') {
+          return true;
+        }
+        return false;
+      }
+      
+      function getElementType(el) {
+        const tagName = el.tagName.toLowerCase();
+        const role = el.getAttribute('role') || '';
+
+        if (tagName === 'body') return 'page';
+        if (role === 'dialog' || el.classList.contains('modal') || el.classList.contains('dialog')) return 'dialog';
+        if (tagName === 'table') return 'table';
+        if (role === 'grid' || role === 'treegrid' || el.classList.contains('ag-theme-alpine') || el.classList.contains('dx-datagrid')) return 'grid';
+        if (role === 'tab' || role === 'tablist') return 'tab';
+        if (tagName === 'svg') return 'svg';
+        if (tagName === 'canvas') return 'canvas';
+        if (tagName === 'img' || tagName === 'image' || role === 'img') return 'image';
+        
+        // Rich text editors
+        if (el.classList.contains('ql-container') || el.classList.contains('ql-editor') ||
+            el.classList.contains('mce-content-body') || el.classList.contains('ck-editor') ||
+            el.classList.contains('draft-js') || el.classList.contains('ProseMirror')) {
+          return 'rte';
+        }
+
+        if (tagName === 'label') {
+          return 'field';
+        }
+
+        if (/^h[1-6]$/.test(tagName)) {
+          if (el.textContent?.trim()) {
+            return 'field';
+          }
+        }
+
+        // Fields (interactive inputs)
+        if (['input', 'select', 'textarea'].includes(tagName)) {
+          const type = el.getAttribute('type');
+          if (type === 'hidden' || type === 'submit' || type === 'reset' || type === 'button') {
+            return null; // Skip buttons/hidden inputs in basic field detection, handled below
+          }
+          return 'field';
+        }
+        
+        if (tagName === 'button' || role === 'button' || role === 'link' || tagName === 'a') {
+          // Only if it has text or accessible name
+          const name = getAccessibleName(el);
+          if (name || el.textContent?.trim()) {
+            return 'field';
+          }
+        }
+
+        if (role === 'menu' || role === 'menubar' || role === 'menuitem') return 'menu';
+        if (role === 'toolbar') return 'toolbar';
+        if (tagName === 'nav' || role === 'navigation') return 'navigation';
+
+        // Sections and subsections
+        if (tagName === 'fieldset' || tagName === 'section' || role === 'region' || role === 'group') {
+          if (isFormWidget(el)) return null;
+          return 'section';
+        }
+
+        // DIVs/containers with headings or sectioning classes
+        if (tagName === 'div' && (el.classList.contains('section') || el.classList.contains('panel') || el.classList.contains('card') || el.classList.contains('fieldset'))) {
+          if (isFormWidget(el)) return null;
+          return 'section';
+        }
+
+        // Check if DIV starts with a heading as first child
+        if (tagName === 'div') {
+          const firstChild = el.firstElementChild;
+          if (firstChild && /^h[1-6]$/.test(firstChild.tagName.toLowerCase())) {
+            if (isFormWidget(el)) return null;
+            return 'section';
+          }
+        }
+
+        return null;
+      }
+
+      function getNodeName(el, type) {
+        if (type === 'page') return document.title || window.location.pathname || 'Page';
+        
+        let name = getAccessibleName(el);
+        if (name) return name;
+        
+        if (type === 'section') {
+          const legend = el.querySelector('legend');
+          if (legend) {
+            const text = getCleanText(legend).trim();
+            if (text) return text;
+          }
+          const headings = Array.from(el.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+          const directHeading = headings.find(h => {
+            let p = h.parentElement;
+            while (p && p !== el) {
+              const pType = getElementType(p);
+              if (pType === 'section' || pType === 'dialog' || pType === 'table' || pType === 'grid') {
+                return false; // Belongs to a nested container
+              }
+              if (p.querySelector('input, select, textarea, button')) {
+                return false; // Heading is inside a field wrapper
+              }
+              p = p.parentElement;
+            }
+            return true;
+          });
+          if (directHeading) {
+            const text = getCleanText(directHeading).trim();
+            if (text) return text;
+          }
+        }
+        
+        if (el.id) return el.id;
+        if (el.className && typeof el.className === 'string') {
+          const classes = el.className.split(/s+/).filter(c => c && !c.startsWith('_') && !c.includes('style'));
+          if (classes.length > 0) return classes[0];
+        }
+
+        return el.tagName.toLowerCase();
+      }
+
+      // Collect all classified nodes
+      const nodesMap = new Map();
+      const classifiedElements = [];
+
+      allElements.forEach(el => {
+        const type = getElementType(el);
+        if (type) {
+          const rect = el.getBoundingClientRect();
+          const isVisible = rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none';
+          if (!isVisible && type !== 'page') return; // Skip hidden elements for structural tree (except page)
+
+          const alternatives = window.__locatorLensAgent.generateAlternatives(el) || [];
+          const bestLocator = alternatives[0]?.selector || ("locator('" + el.tagName.toLowerCase() + "')");
+          const name = getNodeName(el, type);
+
+          // Meta extraction
+          let meta = {};
+          if (type === 'table' || type === 'grid') {
+            const headers = Array.from(el.querySelectorAll('th, [role="columnheader"]')).map(h => getCleanText(h).trim()).filter(Boolean);
+            const rowCount = el.querySelectorAll('tr, [role="row"]').length;
+            meta = { headers, rowCount, columnCount: headers.length };
+          } else if (type === 'rte') {
+            let editorType = 'unknown';
+            if (el.classList.contains('ql-container') || el.classList.contains('ql-editor')) editorType = 'Quill';
+            else if (el.classList.contains('mce-content-body')) editorType = 'TinyMCE';
+            else if (el.classList.contains('ck-editor')) editorType = 'CKEditor';
+            else if (el.classList.contains('draft-js')) editorType = 'DraftJS';
+            else if (el.classList.contains('ProseMirror')) editorType = 'ProseMirror';
+            meta = { editorType };
+          } else if (type === 'field') {
+            const isRequired = el.hasAttribute('required') || el.getAttribute('aria-required') === 'true';
+            const isReadOnly = el.hasAttribute('readonly') || el.getAttribute('aria-readonly') === 'true';
+            const placeholder = el.getAttribute('placeholder') || undefined;
+            const inputType = el.tagName.toLowerCase() === 'input' ? el.getAttribute('type') : undefined;
+            meta = { required: isRequired, readOnly: isReadOnly, placeholder, inputType };
+          } else if (type === 'dialog') {
+            const isOpen = window.getComputedStyle(el).display !== 'none' && window.getComputedStyle(el).visibility !== 'hidden';
+            meta = { isOpen };
+          } else if (type === 'svg' || type === 'canvas') {
+            meta = getGraphicsMeta(el) || {};
+          }
+
+          const node = {
+            id: 'node-' + Math.random().toString(36).substr(2, 9),
+            type,
+            name,
+            tagName: el.tagName,
+            role: getElementRole(el),
+            locator: bestLocator,
+            boundingBox: {
+              x: rect.left + window.scrollX,
+              y: rect.top + window.scrollY,
+              width: rect.width,
+              height: rect.height
+            },
+            meta,
+            children: [],
+            _element: el // Keep local reference for tree building
+          };
+
+          nodesMap.set(el, node);
+          classifiedElements.push(node);
+        }
+      });
+
+      // Build hierarchical tree
+      const rootNodes = [];
+      classifiedElements.forEach(node => {
+        let parentEl = node._element.parentElement;
+        let parentNode = null;
+        while (parentEl) {
+          if (nodesMap.has(parentEl)) {
+            parentNode = nodesMap.get(parentEl);
+            break;
+          }
+          parentEl = parentEl.parentElement;
+        }
+
+        if (parentNode && parentNode.id !== node.id) {
+          parentNode.children.push(node);
+        } else {
+          // If no parent found, add to root if it is a page, or if page is not in nodesMap
+          if (node.type === 'page') {
+            rootNodes.push(node);
+          } else {
+            // Find body node
+            const bodyNode = nodesMap.get(document.body);
+            if (bodyNode && bodyNode.id !== node.id) {
+              bodyNode.children.push(node);
+            } else {
+              rootNodes.push(node);
+            }
+          }
+        }
+      });
+
+      // Remove local element references before returning
+      function sanitizeNode(n) {
+        const copy = { ...n };
+        delete copy._element;
+        copy.children = n.children.map(sanitizeNode);
+        return copy;
+      }
+      const tree = rootNodes.map(sanitizeNode);
+
+      // Accessibility Scan
+      const accessibilityIssues = [];
+      const labelsCount = {};
+
+      const interactiveEls = Array.from(document.querySelectorAll('input, select, textarea, button, a, [role="button"], [role="checkbox"], [role="radio"], [role="combobox"], [role="textbox"]'));
+
+      interactiveEls.forEach(el => {
+        const tagName = el.tagName.toLowerCase();
+        const role = getElementRole(el);
+        const rect = el.getBoundingClientRect();
+        const isVisible = rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none' && window.getComputedStyle(el).visibility !== 'hidden';
+
+        // 1. Missing Label
+        const label = getAccessibleName(el);
+        const skipTags = ['a', 'button'];
+        const skipRoles = ['button', 'link'];
+        if (!label && !skipTags.includes(tagName) && !skipRoles.includes(role)) {
+          accessibilityIssues.push({
+            elementId: el.id || undefined,
+            tagName,
+            role,
+            description: 'Interactive <' + tagName + '> is missing an accessible label or name.',
+            severity: 'error',
+            type: 'missing-label',
+            suggestedLocator: getCssPath(el)
+          });
+        }
+
+        // Keep track of labels for duplicate check
+        if (label && isVisible) {
+          const cleanLbl = label.trim();
+          if (!labelsCount[cleanLbl]) {
+            labelsCount[cleanLbl] = [];
+          }
+          labelsCount[cleanLbl].push(el);
+        }
+
+        // 2. Hidden interactive elements
+        if (!isVisible && tagName !== 'input' && el.getAttribute('type') !== 'hidden') {
+          const ariaHidden = el.getAttribute('aria-hidden');
+          if (ariaHidden !== 'true') {
+            accessibilityIssues.push({
+              elementId: el.id || undefined,
+              tagName,
+              role,
+              description: 'Interactive <' + tagName + '> is hidden but not marked aria-hidden="true".',
+              severity: 'warning',
+              type: 'hidden-interactive',
+              suggestedLocator: getCssPath(el)
+            });
+          }
+        }
+
+        // 3. Missing Roles for custom click elements
+        if (el.hasAttribute('onclick') && !el.hasAttribute('role') && !['button', 'a', 'input'].includes(tagName)) {
+          accessibilityIssues.push({
+            elementId: el.id || undefined,
+            tagName,
+            role,
+            description: 'Element with onclick listener is missing an ARIA role.',
+            severity: 'error',
+            type: 'missing-role',
+            suggestedLocator: getCssPath(el)
+          });
+        }
+      });
+
+      // Group duplicates
+      let duplicateLabels = 0;
+      Object.keys(labelsCount).forEach(lbl => {
+        if (labelsCount[lbl].length > 1) {
+          duplicateLabels += labelsCount[lbl].length;
+          labelsCount[lbl].forEach(el => {
+            accessibilityIssues.push({
+              elementId: el.id || undefined,
+              tagName: el.tagName.toLowerCase(),
+              role: getElementRole(el),
+              description: 'Duplicate label "' + lbl + '" found. Scoping context is needed to uniquely resolve.',
+              severity: 'warning',
+              type: 'duplicate-label',
+              suggestedLocator: getCssPath(el)
+            });
+          });
+        }
+      });
+
+      // Metrics & Readiness Score
+      let totalLocators = classifiedElements.length;
+      let stableLocators = 0;
+      let fragileLocators = 0;
+      let dynamicIdsFound = 0;
+
+      classifiedElements.forEach(node => {
+        const el = node._element;
+        if (el && el.id && isDynamicId(el.id)) {
+          dynamicIdsFound++;
+        }
+
+        if (node.locator.includes('xpath') || node.locator.includes(' > ') || node.locator.includes('nth-child') || node.locator.includes('nth-of-type')) {
+          fragileLocators++;
+        } else {
+          stableLocators++;
+        }
+      });
+
+      // Calculate score out of 100
+      let scoreVal = 100;
+      const scoreFactors = [];
+
+      // 1. Accessibility issues penalties
+      const missingLabelsCount = accessibilityIssues.filter(i => i.type === 'missing-label').length;
+      const missingRolesCount = accessibilityIssues.filter(i => i.type === 'missing-role').length;
+      const hiddenInteractiveCount = accessibilityIssues.filter(i => i.type === 'hidden-interactive').length;
+
+      if (missingLabelsCount > 0) {
+        const penalty = Math.min(25, missingLabelsCount * 5);
+        scoreVal -= penalty;
+        scoreFactors.push({ text: 'Missing accessible labels on ' + missingLabelsCount + ' fields (-' + penalty + ' pts)', positive: false });
+      } else {
+        scoreFactors.push({ text: 'All form fields have accessible labels (+10 pts)', positive: true });
+        scoreVal += 10; // bonus
+      }
+
+      if (duplicateLabels > 0) {
+        const penalty = Math.min(20, duplicateLabels * 4);
+        scoreVal -= penalty;
+        scoreFactors.push({ text: duplicateLabels + ' elements have duplicate labels (-' + penalty + ' pts)', positive: false });
+      }
+
+      if (missingRolesCount > 0) {
+        const penalty = Math.min(15, missingRolesCount * 5);
+        scoreVal -= penalty;
+        scoreFactors.push({ text: 'Custom click listeners missing ARIA roles (-' + penalty + ' pts)', positive: false });
+      }
+
+      // 2. Locator Stability penalties
+      if (fragileLocators > 0) {
+        const pct = Math.round((fragileLocators / Math.max(1, totalLocators)) * 100);
+        const penalty = Math.min(30, Math.round(pct * 0.3));
+        scoreVal -= penalty;
+        scoreFactors.push({ text: pct + '% of locators are fragile/structural (-' + penalty + ' pts)', positive: false });
+      } else if (totalLocators > 0) {
+        scoreFactors.push({ text: 'All locators use stable query strategies (+15 pts)', positive: true });
+        scoreVal += 15; // bonus
+      }
+
+      if (dynamicIdsFound > 0) {
+        const penalty = Math.min(10, dynamicIdsFound * 2);
+        scoreVal -= penalty;
+        scoreFactors.push({ text: 'Dynamic/auto-generated IDs detected in ' + dynamicIdsFound + ' nodes (-' + penalty + ' pts)', positive: false });
+      }
+
+      const readinessScoreVal = Math.max(10, Math.min(100, scoreVal));
+
+      return {
+        tree,
+        accessibilityIssues,
+        healthReport: {
+          totalLocators,
+          stableLocators,
+          fragileLocators,
+          dynamicIdsFound,
+          duplicateLabels
+        },
+        readinessScore: {
+          score: readinessScoreVal,
+          factors: scoreFactors
+        }
+      };
     }
   };
 })();
 `;
 
 // ../engine/src/index.ts
+function toCamelCase(str) {
+  const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+  if (parts.length === 0) return "";
+  return parts.map((p, idx) => {
+    const cleaned = p.replace(/[^a-zA-Z0-9]/g, "");
+    if (idx === 0) {
+      return cleaned.toLowerCase();
+    }
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+  }).join("");
+}
+function toPascalCase(str) {
+  const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+  return parts.map((p) => {
+    const cleaned = p.replace(/[^a-zA-Z0-9]/g, "");
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+  }).join("");
+}
+function cleanNodeName(name) {
+  let cleaned = name;
+  cleaned = cleaned.replace(/(Defaults|Default|Section|Form|Card|Panel|Group|Container|Wrapper|Box)$/i, "");
+  cleaned = cleaned.replace(/\s+[A-Z]$/, "");
+  cleaned = cleaned.replace(/([a-z])([A-Z])$/, "$1");
+  return cleaned.trim() || name;
+}
 var LocatorEngine = class {
   browser = null;
   pages = /* @__PURE__ */ new Map();
@@ -986,6 +1717,40 @@ var LocatorEngine = class {
       this.browser = null;
     }
     this.pages.clear();
+  }
+  /** Soft disconnect — drops internal state but leaves Chrome running. */
+  softDisconnect() {
+    this.browser = null;
+    this.pages.clear();
+  }
+  /** Re-list all open tabs from the currently connected browser. */
+  async getPages() {
+    if (!this.browser) {
+      throw new Error("Not connected to a browser.");
+    }
+    this.pages.clear();
+    const contexts = this.browser.contexts();
+    const allPages = [];
+    for (const context of contexts) {
+      const contextPages = context.pages();
+      for (let idx = 0; idx < contextPages.length; idx++) {
+        const page = contextPages[idx];
+        const id = `page-${Date.now()}-${idx}-${Math.floor(Math.random() * 1e3)}`;
+        this.pages.set(id, page);
+        let title = "Untitled";
+        try {
+          title = await page.title();
+        } catch {
+        }
+        let url = "about:blank";
+        try {
+          url = page.url();
+        } catch {
+        }
+        allPages.push({ id, title, url });
+      }
+    }
+    return allPages;
   }
   getPage(id) {
     return this.pages.get(id);
@@ -1042,9 +1807,19 @@ var LocatorEngine = class {
     try {
       parsedSteps = parseLocator(locatorStr);
     } catch (err) {
+      let parseErrMsg = err.message;
+      if (parseErrMsg.includes("Expected token LPAREN, but got DOT") || parseErrMsg.includes("Expected token LPAREN")) {
+        if (/\.or\s*\./.test(locatorStr) || /\.or\s*$/.test(locatorStr)) {
+          parseErrMsg = `Syntax Error: ".or" must be called as a method with an argument, e.g.:
+.or(locator('...'))
+
+Incorrect: .or.locator('...')  \u2190  missing parentheses and argument
+Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument`;
+        }
+      }
       return {
         success: false,
-        error: `Syntax Parsing Error: ${err.message}`,
+        error: `Syntax Parsing Error: ${parseErrMsg}`,
         count: 0,
         elements: [],
         confidence: 0,
@@ -1071,9 +1846,13 @@ var LocatorEngine = class {
         throw new Error("Expression did not evaluate to a Playwright Locator instance.");
       }
     } catch (err) {
+      let evalErrMsg = err.message;
+      if (evalErrMsg.includes("reading '_frame'") || evalErrMsg.includes("reading '_selector'") || parsedSteps.some((s) => s.name === "or" && s.args.length === 0)) {
+        evalErrMsg = `.or() requires another locator as an argument, e.g. .or(locator('...'))`;
+      }
       return {
         success: false,
-        error: `Evaluation Error: ${err.message}`,
+        error: `Evaluation Error: ${evalErrMsg}`,
         count: 0,
         elements: [],
         confidence: 0,
@@ -1162,12 +1941,11 @@ var LocatorEngine = class {
         return false;
       }
       const type = count === 1 ? "success" : "warning";
-      const elementHandles = await locatorInstance.elementHandles();
-      await page.evaluate(([elements, hlType, scrollIdx]) => {
+      await locatorInstance.evaluateAll((elems, [hlType, scrollIdx]) => {
         if (window.__locatorLensAgent) {
-          window.__locatorLensAgent.highlight(elements, hlType, scrollIdx);
+          window.__locatorLensAgent.highlight(elems, hlType, scrollIdx);
         }
-      }, [elementHandles, type, scrollIndex]);
+      }, [type, scrollIndex]);
       return true;
     } catch {
       return false;
@@ -1311,6 +2089,129 @@ var LocatorEngine = class {
     return { success: true, runs: runResults, score, locatorStr };
   }
   // ─────────────────────────────────────────────────────────────
+  // Phase 5 — Field Simulation Engine
+  // ─────────────────────────────────────────────────────────────
+  async simulateFill(pageId, locatorStr, value) {
+    const page = this.getPage(pageId);
+    if (!page) return false;
+    try {
+      await this.ensureAgentInjected(page);
+      const sandbox = {
+        page,
+        locator: page.locator.bind(page),
+        getByRole: page.getByRole.bind(page),
+        getByText: page.getByText.bind(page),
+        getByLabel: page.getByLabel.bind(page),
+        getByPlaceholder: page.getByPlaceholder.bind(page),
+        getByAltText: page.getByAltText.bind(page),
+        getByTitle: page.getByTitle.bind(page),
+        getByTestId: page.getByTestId.bind(page)
+      };
+      const context = vm.createContext(sandbox);
+      const locatorInstance = vm.runInContext(locatorStr, context);
+      const handle = await locatorInstance.elementHandle();
+      if (!handle) return false;
+      return await page.evaluate(([el, val]) => {
+        return window.__locatorLensAgent.simulateFill(el, val);
+      }, [handle, value]);
+    } catch (err) {
+      console.error("Failed to simulate fill:", err);
+      return false;
+    }
+  }
+  async simulateClick(pageId, locatorStr, x, y) {
+    const page = this.getPage(pageId);
+    if (!page) return false;
+    try {
+      await this.ensureAgentInjected(page);
+      const sandbox = {
+        page,
+        locator: page.locator.bind(page),
+        getByRole: page.getByRole.bind(page),
+        getByText: page.getByText.bind(page),
+        getByLabel: page.getByLabel.bind(page),
+        getByPlaceholder: page.getByPlaceholder.bind(page),
+        getByAltText: page.getByAltText.bind(page),
+        getByTitle: page.getByTitle.bind(page),
+        getByTestId: page.getByTestId.bind(page)
+      };
+      const context = vm.createContext(sandbox);
+      const locatorInstance = vm.runInContext(locatorStr, context);
+      const handle = await locatorInstance.elementHandle();
+      if (!handle) return false;
+      return await page.evaluate(([el, clickX, clickY]) => {
+        return window.__locatorLensAgent.simulateClick(el, clickX, clickY);
+      }, [handle, x, y]);
+    } catch (err) {
+      console.error("Failed to simulate click:", err);
+      return false;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────
+  // Phase 6 — Bulk Stability Testing
+  // ─────────────────────────────────────────────────────────────
+  async bulkStabilityTest(pageId, locatorStrs, runs = 3) {
+    const page = this.getPage(pageId);
+    if (!page) {
+      throw new Error("Page not found.");
+    }
+    const results = {};
+    const foundCounts = {};
+    locatorStrs.forEach((loc) => {
+      results[loc] = [];
+      foundCounts[loc] = 0;
+    });
+    for (let r = 0; r < runs; r++) {
+      try {
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 3e4 });
+        try {
+          await this.ensureAgentInjected(page);
+        } catch {
+        }
+        for (const locatorStr of locatorStrs) {
+          try {
+            const sandbox = {
+              page,
+              locator: page.locator.bind(page),
+              getByRole: page.getByRole.bind(page),
+              getByText: page.getByText.bind(page),
+              getByLabel: page.getByLabel.bind(page),
+              getByPlaceholder: page.getByPlaceholder.bind(page),
+              getByAltText: page.getByAltText.bind(page),
+              getByTitle: page.getByTitle.bind(page),
+              getByTestId: page.getByTestId.bind(page)
+            };
+            const ctx = vm.createContext(sandbox);
+            const locatorInstance = vm.runInContext(locatorStr, ctx);
+            const count = await locatorInstance.count();
+            const found = count > 0;
+            if (found) {
+              foundCounts[locatorStr]++;
+            }
+            results[locatorStr].push({ run: r + 1, found, matchCount: count });
+          } catch (err) {
+            results[locatorStr].push({ run: r + 1, found: false, matchCount: 0, error: err.message });
+          }
+        }
+      } catch (err) {
+        locatorStrs.forEach((locatorStr) => {
+          results[locatorStr].push({ run: r + 1, found: false, matchCount: 0, error: `Reload failed: ${err.message}` });
+        });
+      }
+    }
+    const finalResults = {};
+    locatorStrs.forEach((locatorStr) => {
+      const score = Math.round(foundCounts[locatorStr] / runs * 100);
+      finalResults[locatorStr] = {
+        success: true,
+        runs: results[locatorStr],
+        score,
+        locatorStr
+      };
+    });
+    return finalResults;
+  }
+  // ─────────────────────────────────────────────────────────────
   // Phase 8 — Form-Aware Analysis
   // ─────────────────────────────────────────────────────────────
   async scanForms(pageId) {
@@ -1324,71 +2225,310 @@ var LocatorEngine = class {
     });
     return forms;
   }
+  // ─────────────────────────────────────────────────────────────
+  // UI Intelligence Scanner
+  // ─────────────────────────────────────────────────────────────
+  async scanUI(pageId) {
+    const page = this.getPage(pageId);
+    if (!page) {
+      throw new Error("Page not found.");
+    }
+    await this.ensureAgentInjected(page);
+    const scanResult = await page.evaluate(() => {
+      return window.__locatorLensAgent.scanUI();
+    });
+    return scanResult;
+  }
+  generatePOMExport(tree, customClassName, sectionNaming) {
+    const lines = [];
+    lines.push("import { Page, Locator } from '@playwright/test';\n");
+    const pageNode = tree.find((n) => n.type === "page") || tree[0];
+    const rawClassName = customClassName || (pageNode ? pageNode.name : "ScannedPage");
+    const className = toPascalCase(rawClassName) + (rawClassName.endsWith("Page") ? "" : "Page");
+    lines.push(`export class ${className} {`);
+    lines.push(`  readonly page: Page;`);
+    const declarations = [];
+    const initializers = [];
+    const seenProperties = /* @__PURE__ */ new Set();
+    function getUniquePropName(node, parentNode) {
+      let baseName = node.name;
+      if (node.parentSectionName) {
+        const sectionClean = cleanNodeName(node.parentSectionName);
+        if (sectionNaming === "prefix") {
+          baseName = sectionClean + " " + baseName;
+        } else if (sectionNaming === "suffix") {
+          baseName = baseName + " " + sectionClean;
+        }
+      }
+      let name = toCamelCase(cleanNodeName(baseName));
+      if (!name) name = "element";
+      if (seenProperties.has(name) && (parentNode == null ? void 0 : parentNode.name)) {
+        const parentClean = toPascalCase(cleanNodeName(parentNode.name));
+        name = toCamelCase(parentClean + toPascalCase(name));
+      }
+      let finalName = name;
+      let counter = 2;
+      while (seenProperties.has(finalName)) {
+        finalName = `${name}${counter}`;
+        counter++;
+      }
+      seenProperties.add(finalName);
+      return finalName;
+    }
+    function traverse(node, parentVar = "page", parentNode) {
+      const type = node.type;
+      if (type === "section" || type === "subsection" || type === "dialog" || type === "table" || type === "grid") {
+        const varName = getUniquePropName(node, parentNode);
+        declarations.push(`  readonly ${varName}: Locator;`);
+        initializers.push(`    this.${varName} = ${parentVar}.${node.locator};`);
+        node.children.forEach((c) => traverse(c, `this.${varName}`, node));
+        return;
+      } else if (type === "field" || type === "image" || type === "svg" || type === "canvas" || type === "rte") {
+        const varName = getUniquePropName(node, parentNode);
+        declarations.push(`  readonly ${varName}: Locator;`);
+        initializers.push(`    this.${varName} = ${parentVar}.${node.locator};`);
+      }
+      node.children.forEach((c) => traverse(c, parentVar, parentNode));
+    }
+    tree.forEach((n) => traverse(n));
+    lines.push(declarations.join("\n"));
+    lines.push("\n  constructor(page: Page) {");
+    lines.push("    this.page = page;");
+    lines.push(initializers.join("\n"));
+    lines.push("  }");
+    lines.push("}");
+    return lines.join("\n");
+  }
+  generateSDKExport(tree) {
+    const code = `import { Page, Locator } from '@playwright/test';
+
+export class UIAutomationSDK {
+  constructor(public readonly page: Page) {}
+
+  /**
+   * Scoped section finder
+   */
+  getSection(name: string): Locator {
+    return this.page.locator('fieldset, section, [role="region"], [role="group"], .card, .panel')
+      .filter({ has: this.page.locator('legend, h1, h2, h3, h4, h5, h6, [aria-label]').filter({ hasText: name }) })
+      .first();
+  }
+
+  /**
+   * Generic API to interact with any field by its section and label
+   */
+  async fillField(options: { section?: string; label: string; value: string }) {
+    let scope = options.section ? this.getSection(options.section) : this.page;
+    const field = scope.getByLabel(options.label)
+      .or(scope.getByPlaceholder(options.label))
+      .or(scope.getByRole('textbox', { name: options.label }))
+      .or(scope.locator('input, textarea, select').filter({ hasText: options.label }));
+    await field.first().fill(options.value);
+  }
+
+  /**
+   * Generic API to click a button in a section
+   */
+  async clickButton(options: { section?: string; label: string }) {
+    let scope = options.section ? this.getSection(options.section) : this.page;
+    const btn = scope.getByRole('button', { name: options.label })
+      .or(scope.getByText(options.label))
+      .or(scope.locator('button, a, [role="button"]').filter({ hasText: options.label }));
+    await btn.first().click();
+  }
+
+  /**
+   * Generic API to read table cells
+   */
+  async getTableCell(options: { tableSection: string; rowIndex: number; columnName: string }): Promise<string> {
+    const tableScope = this.getSection(options.tableSection);
+    const headers = await tableScope.locator('th, [role="columnheader"]').allTextContents();
+    const colIndex = headers.indexOf(options.columnName);
+    if (colIndex === -1) {
+      throw new Error(\`Column "\${options.columnName}" not found in table "\${options.tableSection}". Available columns: \${headers.join(', ')}\`);
+    }
+    const cell = tableScope.locator('tr, [role="row"]').nth(options.rowIndex + 1).locator('td, [role="gridcell"]').nth(colIndex);
+    return (await cell.innerText()).trim();
+  }
+}
+`;
+    return code;
+  }
+  generateTSInterfacesExport(tree, sectionNaming) {
+    const lines = [];
+    const seenInterfaces = /* @__PURE__ */ new Set();
+    function getFieldName(f) {
+      let baseName = f.name;
+      if (f.parentSectionName) {
+        const sectionClean = cleanNodeName(f.parentSectionName);
+        if (sectionNaming === "prefix") {
+          baseName = sectionClean + " " + baseName;
+        } else if (sectionNaming === "suffix") {
+          baseName = baseName + " " + sectionClean;
+        }
+      }
+      return toCamelCase(cleanNodeName(baseName));
+    }
+    function traverse(node) {
+      const fields = node.children.filter((c) => c.type === "field");
+      if (fields.length > 0) {
+        const cleanName = toPascalCase(cleanNodeName(node.name));
+        let interfaceName = cleanName + "Data";
+        let finalName = interfaceName;
+        let counter = 2;
+        while (seenInterfaces.has(finalName)) {
+          finalName = `${cleanName}${counter}Data`;
+          counter++;
+        }
+        seenInterfaces.add(finalName);
+        lines.push(`export interface ${finalName} {`);
+        fields.forEach((f) => {
+          const cleanFieldName = getFieldName(f);
+          if (cleanFieldName) {
+            lines.push(`  ${cleanFieldName}?: string;`);
+          }
+        });
+        lines.push("}\n");
+      }
+      node.children.forEach((c) => {
+        if (c.type !== "field") {
+          traverse(c);
+        }
+      });
+    }
+    tree.forEach((n) => traverse(n));
+    if (lines.length === 0) {
+      lines.push("export interface PageData {\n  [key: string]: any;\n}");
+    }
+    return lines.join("\n");
+  }
+  generateJSONSchemaExport(tree) {
+    const schema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+      properties: {},
+      required: []
+    };
+    function traverse(node, currentProps) {
+      if (node.type === "section" || node.type === "subsection" || node.type === "dialog") {
+        const sectionProps = {
+          type: "object",
+          properties: {},
+          required: []
+        };
+        const fields = node.children.filter((c) => c.type === "field");
+        fields.forEach((f) => {
+          var _a;
+          sectionProps.properties[f.name] = {
+            type: "string",
+            description: `Field: ${f.name}, Locator: ${f.locator}`
+          };
+          if ((_a = f.meta) == null ? void 0 : _a.required) {
+            sectionProps.required.push(f.name);
+          }
+        });
+        if (fields.length > 0) {
+          currentProps[node.name] = sectionProps;
+        }
+        node.children.forEach((c) => traverse(c, sectionProps.properties));
+      } else {
+        node.children.forEach((c) => traverse(c, currentProps));
+      }
+    }
+    tree.forEach((n) => traverse(n, schema.properties));
+    if (Object.keys(schema.properties).length === 0) {
+      schema.properties.fields = {
+        type: "object",
+        additionalProperties: { type: "string" }
+      };
+    }
+    return JSON.stringify(schema, null, 2);
+  }
+  generateYAMLExport(tree) {
+    const lines = [];
+    function traverse(node, indent = 0) {
+      const pad = " ".repeat(indent);
+      lines.push(`${pad}- name: "${node.name.replace(/"/g, '\\"')}"`);
+      lines.push(`${pad}  type: "${node.type}"`);
+      lines.push(`${pad}  locator: "${node.locator.replace(/"/g, '\\"')}"`);
+      if (node.children.length > 0) {
+        lines.push(`${pad}  children:`);
+        node.children.forEach((c) => traverse(c, indent + 4));
+      }
+    }
+    lines.push("page_structure:");
+    tree.forEach((n) => traverse(n, 2));
+    return lines.join("\n");
+  }
   calculateConfidence(locatorStr, count, el, steps) {
-    let score = 0;
     const factors = [];
-    if (count === 1) {
-      score += 40;
-      factors.push({ text: "Single unique match", positive: true });
-    } else {
-      score -= 20;
-      factors.push({ text: `Multiple matches found (${count})`, positive: false });
-    }
-    if (el == null ? void 0 : el.visible) {
-      score += 15;
-      factors.push({ text: "Element is visible on screen", positive: true });
-    } else if (el) {
-      score -= 10;
-      factors.push({ text: "Element is hidden/invisible", positive: false });
-    }
+    let score = 50;
     if (locatorStr.includes("getByTestId")) {
-      score += 25;
-      factors.push({ text: "Uses semantic data-testid locator", positive: true });
-    } else if (locatorStr.includes("getByRole") && locatorStr.includes("name:")) {
-      score += 20;
-      factors.push({ text: "Uses getByRole with accessible name filter", positive: true });
+      score = 98;
+      factors.push({ text: "Uses stable data-testid locator", positive: true });
     } else if (locatorStr.includes("getByLabel")) {
-      score += 20;
+      score = 95;
       factors.push({ text: "Uses getByLabel standard form query", positive: true });
-    } else if (locatorStr.includes("getByPlaceholder") || locatorStr.includes("getByTitle") || locatorStr.includes("getByAltText")) {
-      score += 15;
-      factors.push({ text: "Uses accessible placeholder/title/alt text", positive: true });
+    } else if (locatorStr.includes("getByRole") && (locatorStr.includes("name:") || locatorStr.includes("name :"))) {
+      score = 92;
+      factors.push({ text: "Uses getByRole with accessible name filter", positive: true });
+    } else if (locatorStr.includes("getByPlaceholder") || locatorStr.includes("getByAltText") || locatorStr.includes("getByTitle")) {
+      score = 85;
+      factors.push({ text: "Uses accessible attribute locator", positive: true });
     } else if (locatorStr.includes("getByText")) {
-      score += 12;
-      factors.push({ text: "Uses getByText search", positive: true });
+      score = 80;
+      factors.push({ text: "Uses getByText content match", positive: true });
+    } else if (locatorStr.includes("getByRole")) {
+      score = 75;
+      factors.push({ text: "Uses getByRole without name filter", positive: true });
     } else if (locatorStr.includes("locator(")) {
       const cssMatch = locatorStr.match(/locator\(\s*['"`](.*?)['"`]\s*\)/);
       if (cssMatch) {
         const selector = cssMatch[1];
         if (selector.startsWith("#") && !selector.includes(" ") && !selector.includes(">")) {
-          score += 15;
+          score = 85;
           factors.push({ text: "Uses CSS ID locator", positive: true });
         } else if (selector.startsWith("//") || selector.startsWith("xpath=")) {
-          score -= 15;
+          score = 40;
           factors.push({ text: "Uses XPath locator (fragile to structure)", positive: false });
         } else {
-          score += 5;
+          score = 55;
           factors.push({ text: "Uses CSS path selector", positive: false });
         }
       }
     }
+    if (count === 1) {
+      factors.push({ text: "Single unique match", positive: true });
+    } else if (count > 1) {
+      score = Math.max(0, score - 15);
+      factors.push({ text: `Multiple matches found (${count}) \u2014 not unique`, positive: false });
+    } else {
+      score = 0;
+      factors.push({ text: "No matching elements found", positive: false });
+    }
+    if (el == null ? void 0 : el.visible) {
+      factors.push({ text: "Element is visible on screen", positive: true });
+    } else if (el) {
+      score = Math.max(0, score - 8);
+      factors.push({ text: "Element is hidden/invisible", positive: false });
+    }
     if (el == null ? void 0 : el.id) {
       const isDynamic = /(mui|ag-|grid-|ng-|val-|id-|ember|k-|dx-)/i.test(el.id) || /^[0-9]+$/.test(el.id) || /[0-9]{4,}/.test(el.id);
       if (isDynamic && locatorStr.includes(`#${el.id}`)) {
-        score -= 25;
+        score = Math.max(0, score - 20);
         factors.push({ text: "Uses generated/dynamic element ID", positive: false });
       }
     }
     if (/\.(nth|first|last)\(/.test(locatorStr) || locatorStr.includes(":nth-child") || locatorStr.includes(":nth-of-type")) {
-      score -= 15;
+      score = Math.max(0, score - 12);
       factors.push({ text: "Uses index filters (fragile to page list changes)", positive: false });
     }
     const fragileCheck = this.hasFragileNameFilter(steps);
     if (fragileCheck.fragile) {
-      score -= 60;
+      score = Math.max(0, score - 40);
       factors.push({ text: fragileCheck.reason, positive: false });
     }
-    const confidence = Math.max(0, Math.min(100, score));
+    const confidence = Math.max(0, Math.min(100, Math.round(score)));
     return { confidence, factors };
   }
   hasFragileNameFilter(steps) {
@@ -1466,7 +2606,7 @@ var LocatorEngine = class {
     return { fragile: false, reason: "" };
   }
   async performFailureAnalysis(page, steps) {
-    var _a, _b;
+    var _a;
     const analysisSteps = [];
     let currentLocatorStr = "page";
     let lastValidLocator = null;
@@ -1519,7 +2659,7 @@ var LocatorEngine = class {
       }
     }
     const suggestions = [];
-    let message = "Locator execution broke at step: " + ((_a = steps[failedStepIndex]) == null ? void 0 : _a.name);
+    let message = failedStepIndex !== -1 ? "Locator execution broke at step: " + ((_a = steps[failedStepIndex]) == null ? void 0 : _a.name) : "Locator returned 0 elements.";
     if (failedStepIndex !== -1 && lastValidLocator) {
       const failedStep = steps[failedStepIndex];
       if (failedStep.name === "getByRole") {
@@ -1533,9 +2673,9 @@ var LocatorEngine = class {
             const childInfo = await handle.evaluate((el) => {
               const children = Array.from(el.querySelectorAll("*"));
               return children.map((child) => {
-                var _a2, _b2;
+                var _a2, _b;
                 const role = ((_a2 = window.__locatorLensAgent.getElementInfo(child)) == null ? void 0 : _a2.role) || "";
-                const accName = ((_b2 = window.__locatorLensAgent.getElementInfo(child)) == null ? void 0 : _b2.accessibleName) || "";
+                const accName = ((_b = window.__locatorLensAgent.getElementInfo(child)) == null ? void 0 : _b.accessibleName) || "";
                 return { role, accessibleName: accName, tagName: child.tagName.toLowerCase() };
               }).filter((c) => c.role && c.role !== "generic");
             });
@@ -1614,22 +2754,140 @@ var LocatorEngine = class {
                 suggestions.push({
                   selector: `${currentLocatorStr}.${failedStep.name}(/${expectedText}/i)`,
                   type: "locator",
-                  // fallback type
                   confidence: 85,
                   reason: `Regex partial match suggestion for "${lbl}".`
                 });
               }
             });
-            message = `Text/Label mismatch. Expected label like "${expectedText}" but found: [${labelsFound.slice(0, 3).join(", ")}]`;
+            message = `Text/Label mismatch. Expected "${expectedText}" but found: [${labelsFound.slice(0, 3).join(", ")}]`;
+          }
+        } catch {
+        }
+      }
+      if (failedStep.name === "getByTestId") {
+        const expectedId = String(failedStep.args[0] || "");
+        try {
+          const handles = await lastValidLocator.elementHandles();
+          const foundTestIds = [];
+          for (const handle of handles) {
+            const ids = await handle.evaluate((el) => {
+              const testIdAttrs = ["data-testid", "data-test-id", "data-test", "data-cy", "data-qa"];
+              const all = Array.from(el.querySelectorAll("*"));
+              const result = [];
+              all.forEach((child) => {
+                testIdAttrs.forEach((attr) => {
+                  const val = child.getAttribute(attr);
+                  if (val) result.push(val);
+                });
+              });
+              return result;
+            });
+            foundTestIds.push(...ids);
+          }
+          const uniqueIds = [...new Set(foundTestIds)];
+          if (uniqueIds.length > 0) {
+            const closeMatches = uniqueIds.filter(
+              (id) => id.toLowerCase().includes(expectedId.toLowerCase()) || expectedId.toLowerCase().includes(id.toLowerCase())
+            );
+            const candidates = closeMatches.length > 0 ? closeMatches : uniqueIds.slice(0, 5);
+            message = closeMatches.length > 0 ? `Test ID "${expectedId}" not found \u2014 close matches exist in container.` : `Test ID "${expectedId}" not found. Available test IDs in container: [${uniqueIds.slice(0, 3).join(", ")}]`;
+            candidates.forEach((id) => {
+              suggestions.push({
+                selector: `${currentLocatorStr}.getByTestId('${id}')`,
+                type: "getByTestId",
+                confidence: closeMatches.includes(id) ? 88 : 70,
+                reason: `Test ID "${id}" found in container.`
+              });
+            });
+          } else {
+            message = `No elements with test ID attributes found inside the container.`;
+          }
+          analysisSteps[analysisSteps.length - 1].foundElementsInfo = uniqueIds.map((id) => ({ role: "testid", accessibleName: id }));
+        } catch {
+        }
+      }
+      if (failedStep.name === "getByAltText") {
+        const expectedAlt = String(failedStep.args[0] || "");
+        try {
+          const handles = await lastValidLocator.elementHandles();
+          const foundAlts = [];
+          for (const handle of handles) {
+            const alts = await handle.evaluate((el) => {
+              const all = Array.from(el.querySelectorAll("[alt]"));
+              return all.map((child) => child.getAttribute("alt") || "").filter(Boolean);
+            });
+            foundAlts.push(...alts);
+          }
+          const uniqueAlts = [...new Set(foundAlts)];
+          if (uniqueAlts.length > 0) {
+            message = `Alt text "${expectedAlt}" not found. Available alt texts: [${uniqueAlts.slice(0, 3).join(", ")}]`;
+            const closeAlts = uniqueAlts.filter(
+              (a) => a.toLowerCase().includes(expectedAlt.toLowerCase()) || expectedAlt.toLowerCase().includes(a.toLowerCase())
+            );
+            (closeAlts.length > 0 ? closeAlts : uniqueAlts.slice(0, 3)).forEach((alt) => {
+              suggestions.push({
+                selector: `${currentLocatorStr}.getByAltText('${alt}')`,
+                type: "getByAltText",
+                confidence: closeAlts.includes(alt) ? 88 : 70,
+                reason: `Image with alt text "${alt}" found in container.`
+              });
+              suggestions.push({
+                selector: `${currentLocatorStr}.getByAltText(/${alt}/i)`,
+                type: "getByAltText",
+                confidence: closeAlts.includes(alt) ? 85 : 65,
+                reason: `Case-insensitive partial match for alt text "${alt}".`
+              });
+            });
+          } else {
+            message = `No elements with alt attributes found inside the container.`;
+          }
+        } catch {
+        }
+      }
+      if (failedStep.name === "getByTitle") {
+        const expectedTitle = String(failedStep.args[0] || "");
+        try {
+          const handles = await lastValidLocator.elementHandles();
+          const foundTitles = [];
+          for (const handle of handles) {
+            const titles = await handle.evaluate((el) => {
+              const all = Array.from(el.querySelectorAll("[title]"));
+              return all.map((child) => child.getAttribute("title") || "").filter(Boolean);
+            });
+            foundTitles.push(...titles);
+          }
+          const uniqueTitles = [...new Set(foundTitles)];
+          if (uniqueTitles.length > 0) {
+            message = `Title "${expectedTitle}" not found. Available titles: [${uniqueTitles.slice(0, 3).join(", ")}]`;
+            const closeTitles = uniqueTitles.filter(
+              (t) => t.toLowerCase().includes(expectedTitle.toLowerCase()) || expectedTitle.toLowerCase().includes(t.toLowerCase())
+            );
+            (closeTitles.length > 0 ? closeTitles : uniqueTitles.slice(0, 3)).forEach((title) => {
+              suggestions.push({
+                selector: `${currentLocatorStr}.getByTitle('${title}')`,
+                type: "getByTitle",
+                confidence: closeTitles.includes(title) ? 88 : 70,
+                reason: `Element with title "${title}" found in container.`
+              });
+              suggestions.push({
+                selector: `${currentLocatorStr}.getByTitle(/${title}/i)`,
+                type: "getByTitle",
+                confidence: closeTitles.includes(title) ? 82 : 62,
+                reason: `Case-insensitive partial match for title "${title}".`
+              });
+            });
+          } else {
+            message = `No elements with title attributes found inside the container.`;
           }
         } catch {
         }
       }
     } else {
-      message = `Root locator step failed: ${(_b = steps[0]) == null ? void 0 : _b.name}`;
+      const rootStep = steps[0];
+      message = `Root locator step failed: ${rootStep == null ? void 0 : rootStep.name}`;
       try {
-        const selector = steps[0].args[0];
-        if (steps[0].name === "locator" && typeof selector === "string") {
+        if ((rootStep == null ? void 0 : rootStep.name) === "locator" && typeof rootStep.args[0] === "string") {
+          const selector = rootStep.args[0];
           const allTextMatches = await page.evaluate((s) => {
             const results = [];
             const tags = Array.from(document.querySelectorAll("*"));
@@ -1649,6 +2907,110 @@ var LocatorEngine = class {
               reason: `Found element matching "${selector}" as an ID/class directly.`
             });
           });
+        } else if ((rootStep == null ? void 0 : rootStep.name) === "getByTestId") {
+          const expectedId = String(rootStep.args[0] || "");
+          const allIds = await page.evaluate(() => {
+            const testIdAttrs = ["data-testid", "data-test-id", "data-test", "data-cy", "data-qa"];
+            const found = [];
+            document.querySelectorAll("*").forEach((el) => {
+              testIdAttrs.forEach((attr) => {
+                const val = el.getAttribute(attr);
+                if (val) found.push(val);
+              });
+            });
+            return [...new Set(found)];
+          });
+          if (allIds.length > 0) {
+            message = `Test ID "${expectedId}" not found on page. Available test IDs: [${allIds.slice(0, 5).join(", ")}]`;
+            const close = allIds.filter((id) => id.toLowerCase().includes(expectedId.toLowerCase()));
+            (close.length > 0 ? close : allIds).slice(0, 3).forEach((id) => {
+              suggestions.push({
+                selector: `getByTestId('${id}')`,
+                type: "getByTestId",
+                confidence: close.includes(id) ? 85 : 60,
+                reason: `Test ID "${id}" found on page.`
+              });
+            });
+          } else {
+            message = `No test ID attributes found anywhere on the page.`;
+          }
+        } else if ((rootStep == null ? void 0 : rootStep.name) === "getByAltText") {
+          const expectedAlt = String(rootStep.args[0] || "");
+          const allAlts = await page.evaluate(() => {
+            const found = [];
+            document.querySelectorAll("[alt]").forEach((el) => {
+              const val = el.getAttribute("alt");
+              if (val) found.push(val);
+            });
+            return [...new Set(found)];
+          });
+          if (allAlts.length > 0) {
+            message = `Alt text "${expectedAlt}" not found on page. Available: [${allAlts.slice(0, 3).join(", ")}]`;
+            const close = allAlts.filter((a) => a.toLowerCase().includes(expectedAlt.toLowerCase()));
+            (close.length > 0 ? close : allAlts).slice(0, 3).forEach((alt) => {
+              suggestions.push({
+                selector: `getByAltText('${alt}')`,
+                type: "getByAltText",
+                confidence: close.includes(alt) ? 85 : 60,
+                reason: `Image with alt text "${alt}" found on page.`
+              });
+            });
+          } else {
+            message = `No elements with alt attributes found on the page.`;
+          }
+        } else if ((rootStep == null ? void 0 : rootStep.name) === "getByTitle") {
+          const expectedTitle = String(rootStep.args[0] || "");
+          const allTitles = await page.evaluate(() => {
+            const found = [];
+            document.querySelectorAll("[title]").forEach((el) => {
+              const val = el.getAttribute("title");
+              if (val) found.push(val);
+            });
+            return [...new Set(found)];
+          });
+          if (allTitles.length > 0) {
+            message = `Title "${expectedTitle}" not found on page. Available: [${allTitles.slice(0, 3).join(", ")}]`;
+            const close = allTitles.filter((t) => t.toLowerCase().includes(expectedTitle.toLowerCase()));
+            (close.length > 0 ? close : allTitles).slice(0, 3).forEach((title) => {
+              suggestions.push({
+                selector: `getByTitle('${title}')`,
+                type: "getByTitle",
+                confidence: close.includes(title) ? 85 : 60,
+                reason: `Element with title "${title}" found on page.`
+              });
+            });
+          } else {
+            message = `No elements with title attributes found on the page.`;
+          }
+        } else if ((rootStep == null ? void 0 : rootStep.name) === "getByRole") {
+          const expectedRole = String(rootStep.args[0] || "");
+          const options = rootStep.args[1] || {};
+          const allRoleElements = await page.evaluate((role) => {
+            const all = Array.from(document.querySelectorAll("*"));
+            const results = [];
+            all.forEach((el) => {
+              const info = window.__locatorLensAgent.getElementInfo(el);
+              if ((info == null ? void 0 : info.role) === role) {
+                results.push({ role: info.role, accessibleName: info.accessibleName });
+              }
+            });
+            return results.slice(0, 5);
+          }, expectedRole);
+          if (allRoleElements.length > 0) {
+            message = `No elements with role "${expectedRole}" found \u2014 but similar elements exist.`;
+            allRoleElements.forEach((item) => {
+              if (item.accessibleName) {
+                suggestions.push({
+                  selector: `getByRole('${item.role}', { name: '${item.accessibleName}' })`,
+                  type: "getByRole",
+                  confidence: 80,
+                  reason: `Element with role "${item.role}" and name "${item.accessibleName}" found on page.`
+                });
+              }
+            });
+          } else {
+            message = `No elements with role "${expectedRole}" found on the page at all.`;
+          }
         }
       } catch {
       }
@@ -1662,6 +3024,60 @@ var LocatorEngine = class {
 };
 
 // src/sidebarProvider.ts
+function findChrome() {
+  const platform = process.platform;
+  if (platform === "win32") {
+    const paths = [
+      process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Google/Chrome/Application/chrome.exe") : "",
+      process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Google/Chrome/Application/chrome.exe") : "",
+      process.env.LocalAppData ? path.join(process.env.LocalAppData, "Google/Chrome/Application/chrome.exe") : ""
+    ].filter(Boolean);
+    for (const p of paths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+  } else if (platform === "darwin") {
+    const p = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if (fs.existsSync(p)) {
+      return p;
+    }
+  } else {
+    const paths = [
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser"
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+  }
+  throw new Error("Google Chrome was not found. Please install Google Chrome or configure a custom path in settings.");
+}
+function checkCDPReady(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 1e3 }, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    req.on("error", () => {
+      resolve(false);
+    });
+    req.end();
+  });
+}
+async function waitForCDP(port, timeoutMs = 15e3) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await checkCDPReady(port)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error(`CDP server did not start on port ${port} within ${timeoutMs}ms.`);
+}
 var SidebarProvider = class {
   constructor(_extensionUri) {
     this._extensionUri = _extensionUri;
@@ -1670,6 +3086,8 @@ var SidebarProvider = class {
   _view;
   engine = new LocatorEngine();
   activePageId;
+  spawnedBrowser;
+  tempProfileDir;
   resolveWebviewView(webviewView, context, _token) {
     this._view = webviewView;
     webviewView.webview.options = {
@@ -1678,13 +3096,87 @@ var SidebarProvider = class {
     };
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(async (data) => {
-      var _a;
+      var _a, _b;
       try {
         switch (data.type) {
+          case "launch-browser": {
+            try {
+              const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+              const port = config.get("debuggingPort", 9222);
+              const customPath = config.get("browserPath", "");
+              const cleanProfile = config.get("cleanBrowserProfile", false);
+              const executablePath = customPath || findChrome();
+              if (!fs.existsSync(executablePath)) {
+                throw new Error(`Browser executable not found at: ${executablePath}`);
+              }
+              let baseDir = "";
+              if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                baseDir = vscode.workspace.workspaceFolders[0].uri.fsPath;
+              } else {
+                baseDir = os.tmpdir();
+              }
+              const profileDir = path.join(baseDir, ".vscode", "playwright-locator-profile");
+              this.tempProfileDir = profileDir;
+              vscode.window.showInformationMessage(
+                `Launching Google Chrome with debugging port ${port}. Profile persisted at: ${profileDir}. To delete on exit, toggle 'cleanBrowserProfile' in settings.`
+              );
+              const args = [
+                `--remote-debugging-port=${port}`,
+                `--user-data-dir=${profileDir}`,
+                "--no-first-run",
+                "--no-default-browser-check",
+                "about:blank"
+              ];
+              if (this.spawnedBrowser) {
+                try {
+                  this.spawnedBrowser.kill();
+                } catch {
+                }
+              }
+              this.spawnedBrowser = child_process.spawn(executablePath, args, {
+                detached: true,
+                stdio: "ignore"
+              });
+              this.spawnedBrowser.unref();
+              this.spawnedBrowser.on("exit", () => {
+                this.spawnedBrowser = void 0;
+                if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
+                  try {
+                    fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+                  } catch (e) {
+                    console.error("Failed to clean browser profile:", e);
+                  }
+                }
+                webviewView.webview.postMessage({
+                  type: "connect-status",
+                  connected: false
+                });
+              });
+              await waitForCDP(port);
+              const cdpUrl = `http://127.0.0.1:${port}`;
+              const pages = await this.engine.connect(cdpUrl);
+              const activePageId = (_a = pages[0]) == null ? void 0 : _a.id;
+              this.activePageId = activePageId;
+              webviewView.webview.postMessage({
+                type: "connect-status",
+                connected: true,
+                cdpUrl,
+                pages,
+                activePageId
+              });
+            } catch (err) {
+              webviewView.webview.postMessage({
+                type: "connect-status",
+                connected: false,
+                error: err.message
+              });
+            }
+            break;
+          }
           case "connect-browser": {
             try {
               const pages = await this.engine.connect(data.cdpUrl);
-              const activePageId = (_a = pages[0]) == null ? void 0 : _a.id;
+              const activePageId = (_b = pages[0]) == null ? void 0 : _b.id;
               this.activePageId = activePageId;
               webviewView.webview.postMessage({
                 type: "connect-status",
@@ -1703,12 +3195,52 @@ var SidebarProvider = class {
             break;
           }
           case "disconnect-browser": {
-            await this.engine.disconnect();
+            this.engine.softDisconnect();
             this.activePageId = void 0;
             webviewView.webview.postMessage({
               type: "connect-status",
               connected: false
             });
+            break;
+          }
+          case "close-browser": {
+            if (this.spawnedBrowser) {
+              try {
+                this.spawnedBrowser.kill();
+              } catch {
+              }
+              this.spawnedBrowser = void 0;
+            }
+            await this.engine.disconnect();
+            this.activePageId = void 0;
+            const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+            const cleanProfile = config.get("cleanBrowserProfile", false);
+            if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
+              try {
+                fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+              } catch {
+              }
+            }
+            webviewView.webview.postMessage({
+              type: "connect-status",
+              connected: false
+            });
+            break;
+          }
+          case "refresh-pages": {
+            try {
+              const pages = await this.engine.getPages();
+              webviewView.webview.postMessage({
+                type: "pages-refreshed",
+                pages
+              });
+            } catch (err) {
+              webviewView.webview.postMessage({
+                type: "pages-refreshed",
+                pages: [],
+                error: err.message
+              });
+            }
             break;
           }
           case "select-page": {
@@ -1791,6 +3323,55 @@ var SidebarProvider = class {
             }
             break;
           }
+          // Phase 6 — Bulk Stability Testing
+          case "bulk-stability-test": {
+            if (!this.activePageId) return;
+            try {
+              const results = await this.engine.bulkStabilityTest(
+                this.activePageId,
+                data.locatorStrs,
+                data.runs || 3
+              );
+              webviewView.webview.postMessage({ type: "bulk-stability-result", results });
+            } catch (err) {
+              webviewView.webview.postMessage({
+                type: "bulk-stability-result",
+                results: {},
+                error: err.message
+              });
+            }
+            break;
+          }
+          // Phase 5 — Field Simulation Engine
+          case "simulate-fill": {
+            if (!this.activePageId) return;
+            try {
+              const success = await this.engine.simulateFill(
+                this.activePageId,
+                data.locatorStr,
+                data.value
+              );
+              webviewView.webview.postMessage({ type: "simulate-fill-result", success });
+            } catch (err) {
+              webviewView.webview.postMessage({ type: "simulate-fill-result", success: false, error: err.message });
+            }
+            break;
+          }
+          case "simulate-click": {
+            if (!this.activePageId) return;
+            try {
+              const success = await this.engine.simulateClick(
+                this.activePageId,
+                data.locatorStr,
+                data.x,
+                data.y
+              );
+              webviewView.webview.postMessage({ type: "simulate-click-result", success });
+            } catch (err) {
+              webviewView.webview.postMessage({ type: "simulate-click-result", success: false, error: err.message });
+            }
+            break;
+          }
           // Phase 8 — Form Scanner
           case "scan-forms": {
             if (!this.activePageId) return;
@@ -1804,6 +3385,52 @@ var SidebarProvider = class {
                 error: err.message
               });
             }
+            break;
+          }
+          // UI Scanner Intelligence Platform
+          case "scan-ui": {
+            if (!this.activePageId) return;
+            try {
+              const result = await this.engine.scanUI(this.activePageId);
+              webviewView.webview.postMessage({ type: "ui-scan-result", result });
+            } catch (err) {
+              webviewView.webview.postMessage({
+                type: "ui-scan-result",
+                error: err.message
+              });
+            }
+            break;
+          }
+          case "generate-export": {
+            try {
+              let code = "";
+              const format = data.format;
+              const tree = data.tree;
+              const sectionNaming = data.sectionNaming;
+              if (format === "pom") {
+                code = this.engine.generatePOMExport(tree, data.className, sectionNaming);
+              } else if (format === "sdk") {
+                code = this.engine.generateSDKExport(tree);
+              } else if (format === "ts") {
+                code = this.engine.generateTSInterfacesExport(tree, sectionNaming);
+              } else if (format === "json") {
+                code = this.engine.generateJSONSchemaExport(tree);
+              } else if (format === "yaml") {
+                code = this.engine.generateYAMLExport(tree);
+              }
+              webviewView.webview.postMessage({ type: "export-result", format, code });
+            } catch (err) {
+              webviewView.webview.postMessage({ type: "export-result", error: err.message });
+            }
+            break;
+          }
+          case "get-config": {
+            const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+            const enableBeta = config.get("enableBetaFeatures", false);
+            webviewView.webview.postMessage({
+              type: "beta-config",
+              enabled: enableBeta
+            });
             break;
           }
         }
@@ -1826,7 +3453,34 @@ var SidebarProvider = class {
         }
       }
     });
+    const configChangeDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("playwright-locator-lens.enableBetaFeatures")) {
+        const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+        const enableBeta = config.get("enableBetaFeatures", false);
+        webviewView.webview.postMessage({
+          type: "beta-config",
+          enabled: enableBeta
+        });
+      }
+    });
     webviewView.onDidDispose(() => {
+      configChangeDisposable.dispose();
+      if (this.spawnedBrowser) {
+        try {
+          this.spawnedBrowser.kill();
+        } catch {
+        }
+        this.spawnedBrowser = void 0;
+      }
+      const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+      const cleanProfile = config.get("cleanBrowserProfile", false);
+      if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
+        try {
+          fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+        } catch (e) {
+          console.error("Failed to clean browser profile on dispose:", e);
+        }
+      }
       this.engine.disconnect();
     });
   }
@@ -1835,8 +3489,10 @@ var SidebarProvider = class {
     let html = fs.readFileSync(htmlPath.fsPath, "utf8");
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "webview", "style.css"));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "webview", "main.js"));
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "icon.png"));
     html = html.replace(/\$\{styleUri\}/g, styleUri.toString());
     html = html.replace(/\$\{scriptUri\}/g, scriptUri.toString());
+    html = html.replace(/\$\{logoUri\}/g, logoUri.toString());
     return html;
   }
 };

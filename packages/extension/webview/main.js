@@ -55,6 +55,11 @@
   let activePageId = '';
   let currentMatchIndex = 0;
   let totalMatchCount = 0;
+  let originalReadinessScore = null;
+  let originalHealthReport = null;
+  let activeSimulationStatus = null;
+  let betaFeaturesEnabled = false;
+  let currentMatchedElements = [];
 
   // Undo/Redo stack variables
   let undoStack = [];
@@ -191,10 +196,28 @@
     const methodRegex = /(?:^|\.)(g[eE]?[tT]?[B]?[y]?[a-zA-Z]*|l[oO]?[c][a-zA-Z]*)$/;
 
     let match;
+    // Full static ARIA role list — always available as fallback
+    const ARIA_ROLES = [
+      'alert', 'alertdialog', 'application', 'article', 'banner', 'blockquote',
+      'button', 'caption', 'cell', 'checkbox', 'code', 'columnheader', 'combobox',
+      'complementary', 'contentinfo', 'definition', 'deletion', 'dialog', 'directory',
+      'document', 'emphasis', 'feed', 'figure', 'form', 'generic', 'grid', 'gridcell',
+      'group', 'heading', 'img', 'insertion', 'link', 'list', 'listbox', 'listitem',
+      'log', 'main', 'marquee', 'math', 'menu', 'menubar', 'menuitem', 'menuitemcheckbox',
+      'menuitemradio', 'meter', 'navigation', 'none', 'note', 'option', 'paragraph',
+      'presentation', 'progressbar', 'radio', 'radiogroup', 'region', 'row', 'rowgroup',
+      'rowheader', 'scrollbar', 'search', 'searchbox', 'separator', 'slider', 'spinbutton',
+      'status', 'strong', 'subscript', 'superscript', 'switch', 'tab', 'table', 'tablist',
+      'tabpanel', 'term', 'textbox', 'time', 'timer', 'toolbar', 'tooltip', 'tree',
+      'treegrid', 'treeitem'
+    ];
+
     if ((match = beforeCaret.match(getByRoleRegex))) {
       const typed = match[1].toLowerCase();
-      const roles = autocompleteData.roles || [];
-      currentSuggestions = roles
+      // Merge live page roles + static ARIA roles, deduplicated
+      const liveRoles = autocompleteData.roles || [];
+      const merged = [...new Set([...liveRoles, ...ARIA_ROLES])];
+      currentSuggestions = merged
         .filter(r => r.toLowerCase().includes(typed))
         .map(r => ({ label: `'${r}'`, value: `'${r}'`, type: 'role' }));
     } else if ((match = beforeCaret.match(getByPlaceholderRegex))) {
@@ -311,6 +334,7 @@
     const quoteRegex = /(['"])[^'"]*$/;
     
     let newBeforeCaret = beforeCaret;
+    let newAfterCaret = afterCaret;
     let cursorOffset = 0;
     if (s.type === 'method') {
       newBeforeCaret = beforeCaret.replace(methodRegex, s.value);
@@ -320,12 +344,16 @@
     } else {
       const match = beforeCaret.match(quoteRegex);
       if (match) {
-        const lastQuoteIndex = beforeCaret.lastIndexOf(match[1]);
+        const quoteChar = match[1];
+        const lastQuoteIndex = beforeCaret.lastIndexOf(quoteChar);
         newBeforeCaret = beforeCaret.substring(0, lastQuoteIndex) + s.value;
+        if (newAfterCaret.startsWith(quoteChar)) {
+          newAfterCaret = newAfterCaret.substring(1);
+        }
       }
     }
     
-    locatorInput.value = newBeforeCaret + afterCaret;
+    locatorInput.value = newBeforeCaret + newAfterCaret;
     const newCaretPos = newBeforeCaret.length + cursorOffset;
     locatorInput.setSelectionRange(newCaretPos, newCaretPos);
     locatorInput.focus();
@@ -353,11 +381,67 @@
     });
   });
 
+  const launchBtn = document.getElementById('launch-btn');
+  if (launchBtn) {
+    launchBtn.addEventListener('click', () => {
+      const cdpUrl = cdpUrlInput.value.trim();
+      if (!cdpUrl) return;
+
+      showLoader('Launching Google Chrome & connecting...');
+      hideError();
+
+      vscode.postMessage({
+        type: 'launch-browser',
+        cdpUrl: cdpUrl
+      });
+    });
+  }
+
   disconnectBtn.addEventListener('click', () => {
     vscode.postMessage({
       type: 'disconnect-browser'
     });
   });
+
+  const refreshTabsBtn = document.getElementById('refresh-tabs-btn');
+  if (refreshTabsBtn) {
+    refreshTabsBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'refresh-pages' });
+    });
+  }
+
+  // Helper: populate the tab dropdown, filtering out DevTools pages
+  function populateTabSelect(pages, currentPageId) {
+    tabSelect.innerHTML = '';
+    const visiblePages = pages.filter(page => {
+      const url = page.url || '';
+      const title = (page.title || '').toLowerCase();
+      return !url.startsWith('chrome-devtools://') &&
+             !url.startsWith('devtools://') &&
+             !title.includes('developer tools') &&
+             !title.includes('devtools');
+    });
+    visiblePages.forEach(page => {
+      const opt = document.createElement('option');
+      opt.value = page.id;
+      const rawTitle = page.title || 'Untitled';
+      const rawUrl = page.url || '';
+      const title = rawTitle.length > 22 ? rawTitle.substring(0, 20) + '…' : rawTitle;
+      const url = rawUrl.length > 22 ? rawUrl.substring(0, 20) + '…' : rawUrl;
+      opt.textContent = `${title} — ${url}`;
+      opt.title = `${rawTitle}\n${rawUrl}`;
+      if (page.id === currentPageId) {
+        opt.selected = true;
+      }
+      tabSelect.appendChild(opt);
+    });
+    // If active page was a DevTools page or not found, select first visible
+    if (visiblePages.length > 0 && !visiblePages.find(p => p.id === currentPageId)) {
+      activePageId = visiblePages[0].id;
+      tabSelect.value = activePageId;
+      vscode.postMessage({ type: 'select-page', pageId: activePageId });
+    }
+  }
 
   // Helper: detect CDP page-closed errors and guide user to reconnect
   function isCdpClosedError(msg) {
@@ -410,6 +494,7 @@
       prevBtn.disabled = currentMatchIndex === 0;
       nextBtn.disabled = currentMatchIndex === totalMatchCount - 1;
       triggerLiveHighlight(locatorInput.value, currentMatchIndex);
+      renderActiveElementDetails();
     }
   });
 
@@ -420,6 +505,7 @@
       prevBtn.disabled = currentMatchIndex === 0;
       nextBtn.disabled = currentMatchIndex === totalMatchCount - 1;
       triggerLiveHighlight(locatorInput.value, currentMatchIndex);
+      renderActiveElementDetails();
     }
   });
 
@@ -542,6 +628,11 @@
     const message = event.data;
     
     switch (message.type) {
+      case 'beta-config': {
+        betaFeaturesEnabled = message.enabled;
+        toggleBetaFeatures(betaFeaturesEnabled);
+        break;
+      }
       case 'connect-status': {
         hideLoader();
         if (message.connected) {
@@ -555,31 +646,7 @@
           connectedInfo.classList.remove('hidden');
           
           // Populate tab select dropdown (exclude DevTools pages)
-          tabSelect.innerHTML = '';
-          const visiblePages = message.pages.filter(page => {
-            const url = page.url || '';
-            const title = (page.title || '').toLowerCase();
-            return !url.startsWith('chrome-devtools://') &&
-                   !url.startsWith('devtools://') &&
-                   !title.includes('developer tools') &&
-                   !title.includes('devtools');
-          });
-          visiblePages.forEach(page => {
-            const opt = document.createElement('option');
-            opt.value = page.id;
-            const displayUrl = page.url.length > 35 ? page.url.substring(0, 32) + '...' : page.url;
-            opt.textContent = (page.title || 'Untitled') + ' — ' + displayUrl;
-            if (page.id === activePageId) {
-              opt.selected = true;
-            }
-            tabSelect.appendChild(opt);
-          });
-          // If the active page was a devtools page, pick first visible page instead
-          if (visiblePages.length > 0 && !visiblePages.find(p => p.id === activePageId)) {
-            activePageId = visiblePages[0].id;
-            tabSelect.value = activePageId;
-            vscode.postMessage({ type: 'select-page', pageId: activePageId });
-          }
+          populateTabSelect(message.pages, activePageId);
 
           evaluateBtn.disabled = locatorInput.value.trim().length === 0;
           clearHlBtn.disabled = false;
@@ -589,7 +656,7 @@
 
           // Show Phase 7 & 8 cards now that we're connected
           updateStabilityCardVisibility();
-          updateFormScannerVisibility();
+          updateUiScannerVisibility();
         } else {
           isConnected = false;
           activePageId = '';
@@ -606,11 +673,20 @@
 
           // Hide Phase 7 & 8 cards on disconnect
           updateStabilityCardVisibility();
-          updateFormScannerVisibility();
+          updateUiScannerVisibility();
 
           if (message.error) {
             showError('Connection Failed', 'Could not connect to browser CDP. Make sure Chrome/Chromium is running with --remote-debugging-port=9222. Details: ' + message.error);
           }
+        }
+        break;
+      }
+
+      case 'pages-refreshed': {
+        if (message.pages && message.pages.length > 0) {
+          populateTabSelect(message.pages, activePageId);
+        } else if (message.error) {
+          showError('Refresh Failed', 'Could not refresh tab list: ' + message.error);
         }
         break;
       }
@@ -757,108 +833,129 @@
     });
 
     // 4. Element Details
-    elementsListContainer.innerHTML = '';
-    if (res.elements && res.elements.length > 0) {
-      document.getElementById('details-card').classList.remove('hidden');
-      res.elements.forEach((el, index) => {
-        const item = document.createElement('div');
-        item.className = 'element-meta-item';
-        
-        const header = document.createElement('div');
-        header.className = 'meta-header';
-        header.textContent = `Element #${index + 1} <${el.tagName.toLowerCase()}>`;
-        item.appendChild(header);
+    currentMatchedElements = res.elements || [];
+    renderActiveElementDetails();
 
-        const grid = document.createElement('div');
-        grid.className = 'meta-grid';
-
-        const fields = [
-          { label: 'Role', val: el.role || 'none' },
-          { label: 'ID', val: el.id || 'none' },
-          { label: 'Visible', val: el.visible ? 'Yes' : 'No' },
-          { label: 'Editable', val: el.editable ? 'Yes' : 'No' },
-          { label: 'Name', val: el.accessibleName || 'none', fullWidth: true },
-          { label: 'Classes', val: el.className || 'none', fullWidth: true }
-        ];
-
-        fields.forEach(f => {
-          const field = document.createElement('div');
-          field.className = 'meta-field';
-          if (f.fullWidth) {
-            field.classList.add('full-width');
-          }
-          
-          const lbl = document.createElement('span');
-          lbl.className = 'meta-label';
-          lbl.textContent = f.label;
-          
-          const val = document.createElement('span');
-          val.className = 'meta-value';
-          
-          if (f.val && f.val.length > 120) {
-            const truncatedText = f.val.substring(0, 100) + '...';
-            
-            const truncatedSpan = document.createElement('span');
-            truncatedSpan.className = 'val-truncated';
-            truncatedSpan.textContent = truncatedText;
-            
-            const fullSpan = document.createElement('span');
-            fullSpan.className = 'val-full';
-            fullSpan.style.display = 'none';
-            fullSpan.textContent = f.val;
-            
-            const toggleBtn = document.createElement('span');
-            toggleBtn.className = 'toggle-link';
-            toggleBtn.style.color = 'var(--accent-start)';
-            toggleBtn.style.cursor = 'pointer';
-            toggleBtn.style.fontWeight = '600';
-            toggleBtn.style.marginLeft = '6px';
-            toggleBtn.textContent = 'more';
-            
-            let expanded = false;
-            toggleBtn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              expanded = !expanded;
-              if (expanded) {
-                fullSpan.style.display = 'inline';
-                truncatedSpan.style.display = 'none';
-                toggleBtn.textContent = 'less';
-              } else {
-                fullSpan.style.display = 'none';
-                truncatedSpan.style.display = 'inline';
-                toggleBtn.textContent = 'more';
-              }
-            });
-            
-            val.appendChild(truncatedSpan);
-            val.appendChild(fullSpan);
-            val.appendChild(toggleBtn);
-          } else {
-            val.textContent = f.val;
-          }
-          
-          field.appendChild(lbl);
-          field.appendChild(val);
-          grid.appendChild(field);
-        });
-
-        item.appendChild(grid);
-        elementsListContainer.appendChild(item);
-      });
-    } else {
-      document.getElementById('details-card').classList.add('hidden');
-    }
-
-    // 5. Alternatives Card
+    // 5. Alternatives Card — filter out the evaluated locator itself
     alternativesList.innerHTML = '';
-    if (res.alternatives && res.alternatives.length > 0) {
+    const normalizeLocator = s => (s || '').replace(/\s+/g, ' ').trim()
+      .replace(/"/g, "'");  // normalize double→single quotes for comparison
+    const currentNorm = normalizeLocator(locatorInput.value);
+
+    const filteredAlternatives = (res.alternatives || []).filter(alt => {
+      return normalizeLocator(alt.selector) !== currentNorm;
+    });
+
+    if (filteredAlternatives.length > 0) {
       document.getElementById('alternatives-card').classList.remove('hidden');
-      res.alternatives.forEach(alt => {
+      filteredAlternatives.forEach(alt => {
         alternativesList.appendChild(createAlternativeItem(alt));
       });
     } else {
       document.getElementById('alternatives-card').classList.add('hidden');
     }
+  }
+
+  function renderActiveElementDetails() {
+    elementsListContainer.innerHTML = '';
+    if (currentMatchedElements.length === 0) {
+      document.getElementById('details-card').classList.add('hidden');
+      return;
+    }
+    
+    document.getElementById('details-card').classList.remove('hidden');
+    const el = currentMatchedElements[currentMatchIndex];
+    if (!el) return;
+
+    const item = document.createElement('div');
+    item.className = 'element-meta-item';
+    
+    const header = document.createElement('div');
+    header.className = 'meta-header';
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+    
+    const titleText = document.createElement('span');
+    titleText.textContent = `Match #${currentMatchIndex + 1} of ${currentMatchedElements.length} <${el.tagName.toLowerCase()}>`;
+    header.appendChild(titleText);
+    item.appendChild(header);
+
+    const grid = document.createElement('div');
+    grid.className = 'meta-grid';
+
+    const fields = [
+      { label: 'Role', val: el.role || 'none' },
+      { label: 'ID', val: el.id || 'none' },
+      { label: 'Visible', val: el.visible ? 'Yes' : 'No' },
+      { label: 'Editable', val: el.editable ? 'Yes' : 'No' },
+      { label: 'Name', val: el.accessibleName || 'none', fullWidth: true },
+      { label: 'Classes', val: el.className || 'none', fullWidth: true }
+    ];
+
+    fields.forEach(f => {
+      const field = document.createElement('div');
+      field.className = 'meta-field';
+      if (f.fullWidth) {
+        field.classList.add('full-width');
+      }
+      
+      const lbl = document.createElement('span');
+      lbl.className = 'meta-label';
+      lbl.textContent = f.label;
+      
+      const val = document.createElement('span');
+      val.className = 'meta-value';
+      
+      if (f.val && f.val.length > 120) {
+        const truncatedText = f.val.substring(0, 100) + '...';
+        
+        const truncatedSpan = document.createElement('span');
+        truncatedSpan.className = 'val-truncated';
+        truncatedSpan.textContent = truncatedText;
+        
+        const fullSpan = document.createElement('span');
+        fullSpan.className = 'val-full';
+        fullSpan.style.display = 'none';
+        fullSpan.textContent = f.val;
+        
+        const toggleBtn = document.createElement('span');
+        toggleBtn.className = 'toggle-link';
+        toggleBtn.style.color = 'var(--accent-start)';
+        toggleBtn.style.cursor = 'pointer';
+        toggleBtn.style.fontWeight = '600';
+        toggleBtn.style.marginLeft = '6px';
+        toggleBtn.textContent = 'more';
+        
+        let expanded = false;
+        toggleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          expanded = !expanded;
+          if (expanded) {
+            fullSpan.style.display = 'inline';
+            truncatedSpan.style.display = 'none';
+            toggleBtn.textContent = 'less';
+          } else {
+            fullSpan.style.display = 'none';
+            truncatedSpan.style.display = 'inline';
+            toggleBtn.textContent = 'more';
+          }
+        });
+        
+        val.appendChild(truncatedSpan);
+        val.appendChild(fullSpan);
+        val.appendChild(toggleBtn);
+      } else {
+        val.textContent = f.val;
+      }
+      
+      field.appendChild(lbl);
+      field.appendChild(val);
+      grid.appendChild(field);
+    });
+
+    item.appendChild(grid);
+    elementsListContainer.appendChild(item);
   }
 
   function createAlternativeItem(alt) {
@@ -1052,7 +1149,7 @@
   const stabilityRunsList = document.getElementById('stability-runs-list');
 
   function updateStabilityCardVisibility() {
-    if (isConnected) {
+    if (isConnected && betaFeaturesEnabled) {
       stabilityCard.classList.remove('hidden');
       stabilityTestBtn.disabled = locatorInput.value.trim().length === 0;
     } else {
@@ -1142,289 +1239,1403 @@
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Phase 8 — Form Scanner
+  // Phase 8 — UI Scanner Intelligence Platform
   // ─────────────────────────────────────────────────────────────
-  const formScannerCard = document.getElementById('form-scanner-card');
-  const scanFormsBtn = document.getElementById('scan-forms-btn');
-  const formScanLoader = document.getElementById('form-scan-loader');
-  const formTreeContainer = document.getElementById('form-tree-container');
-  const formCountBadge = document.getElementById('form-count-badge');
-  const copyFormLocatorsBtn = document.getElementById('copy-form-locators-btn');
+  const uiScannerCard = document.getElementById('ui-scanner-card');
+  const scanUiBtn = document.getElementById('scan-ui-btn');
+  const uiScanLoader = document.getElementById('ui-scan-loader');
+  const uiScanResultsContainer = document.getElementById('ui-scan-results-container');
+  const uiReadinessBadge = document.getElementById('ui-readiness-badge');
+  const uiTreeContainer = document.getElementById('ui-tree-container');
+  const uiNodeDetailPanel = document.getElementById('ui-node-detail-panel');
+  const uiNodeDetailContent = document.getElementById('ui-node-detail-content');
+  const accessibilitySummaryText = document.getElementById('accessibility-summary-text');
+  const accessibilityIssuesList = document.getElementById('accessibility-issues-list');
+  const readinessScoreText = document.getElementById('readiness-score-text');
+  const readinessFactorsList = document.getElementById('readiness-factors-list');
+  const metricTotalLocators = document.getElementById('metric-total-locators');
+  const metricStableLocators = document.getElementById('metric-stable-locators');
+  const metricFragileLocators = document.getElementById('metric-fragile-locators');
+  const metricDynamicIds = document.getElementById('metric-dynamic-ids');
+  
+  // Tree Toolbar elements
+  const treeExpandAllBtn = document.getElementById('tree-expand-all-btn');
+  const treeCollapseAllBtn = document.getElementById('tree-collapse-all-btn');
+  const treeStabilityTestBtn = document.getElementById('tree-stability-test-btn');
 
-  // Track last scanned forms for Copy All
-  let lastScannedForms = [];
+  // Exporter Configurator elements
+  const exportFormatSelect = document.getElementById('export-format-select');
+  const copyExportBtn = document.getElementById('copy-export-btn');
+  const exportCodePreview = document.getElementById('export-code-preview');
+  const exportClassNameInput = document.getElementById('export-class-name');
+  const exportSectionNamingSelect = document.getElementById('export-section-naming');
+  const exportSelectAllBtn = document.getElementById('export-select-all-btn');
+  const exportClearAllBtn = document.getElementById('export-clear-all-btn');
+  const exportTreeSelector = document.getElementById('export-tree-selector');
 
-  copyFormLocatorsBtn.addEventListener('click', () => {
-    if (!lastScannedForms.length) return;
-    const lines = [];
-    lastScannedForms.forEach((form, i) => {
-      const formLabel = form.formName || form.formId || ('Form #' + (i + 1));
-      lines.push(`// ${formLabel}`);
-      const allFields = [
-        ...form.sections.flatMap(s => s.fields),
-        ...form.ungroupedFields
-      ];
-      allFields.forEach(f => {
-        if (f.suggestedLocator) {
-          lines.push(`page.${f.suggestedLocator}  // ${f.label || f.placeholder || f.tagName}`);
-        }
-      });
-      lines.push('');
-    });
-    const text = lines.join('\n').trim();
-    navigator.clipboard.writeText(text).then(() => {
-      const orig = copyFormLocatorsBtn.innerHTML;
-      copyFormLocatorsBtn.innerHTML = '✓ Copied!';
-      setTimeout(() => { copyFormLocatorsBtn.innerHTML = orig; }, 1800);
-    });
-  });
+  // View Mode Elements
+  const viewModeTree = document.getElementById('view-mode-tree');
+  const viewModeLocator = document.getElementById('view-mode-locator');
 
-  function updateFormScannerVisibility() {
-    if (isConnected) {
-      formScannerCard.classList.remove('hidden');
-      scanFormsBtn.disabled = false;
+  let scannedUiTree = [];
+  let selectedTreeNode = null;
+  let exportNodeSelections = {};
+  let activeExportViewMode = 'tree';
+
+  // Show/Hide UI Scanner Card on Connection
+  function updateUiScannerVisibility() {
+    if (isConnected && betaFeaturesEnabled) {
+      uiScannerCard.classList.remove('hidden');
+      scanUiBtn.disabled = false;
     } else {
-      formScannerCard.classList.add('hidden');
+      uiScannerCard.classList.add('hidden');
     }
   }
 
-  scanFormsBtn.addEventListener('click', () => {
-    if (!activePageId) return;
-    formScanLoader.classList.remove('hidden');
-    formTreeContainer.classList.add('hidden');
-    scanFormsBtn.disabled = true;
-    vscode.postMessage({ type: 'scan-forms', pageId: activePageId });
+  // Bind Tab Click Handlers
+  document.querySelectorAll('.ui-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const parent = btn.closest('.ui-scanner-card');
+      parent.querySelectorAll('.ui-tab-btn').forEach(b => b.classList.remove('active'));
+      parent.querySelectorAll('.ui-tab-content').forEach(c => c.classList.remove('active'));
+
+      btn.classList.add('active');
+      const targetId = btn.getAttribute('data-tab');
+      document.getElementById(targetId).classList.add('active');
+    });
   });
 
-  // #7 — Suggest a common/shared locator across all form fields
-  function suggestCommonLocator(forms) {
-    if (!forms || forms.length === 0) return null;
-
-    // Collect all suggestedLocators
-    const allLocators = [];
-    forms.forEach(form => {
-      form.sections.forEach(s => s.fields.forEach(f => { if (f.suggestedLocator) allLocators.push(f.suggestedLocator); }));
-      form.ungroupedFields.forEach(f => { if (f.suggestedLocator) allLocators.push(f.suggestedLocator); });
+  // Tree Expand/Collapse Toolbar triggers
+  if (treeExpandAllBtn) {
+    treeExpandAllBtn.addEventListener('click', () => {
+      const arrows = uiTreeContainer.querySelectorAll('.ui-tree-node-arrow');
+      const childContainers = uiTreeContainer.querySelectorAll('.ui-tree-node-children');
+      arrows.forEach(arrow => arrow.classList.add('expanded'));
+      childContainers.forEach(container => container.classList.remove('hidden'));
     });
-
-    if (allLocators.length === 0) return null;
-
-    // Count how many use each Playwright method type
-    const methodCounts = {};
-    allLocators.forEach(loc => {
-      const match = loc.match(/^(getByLabel|getByPlaceholder|getByRole|locator|getByTestId)/);
-      if (match) {
-        methodCounts[match[1]] = (methodCounts[match[1]] || 0) + 1;
-      }
-    });
-
-    const bestMethod = Object.entries(methodCounts).sort((a, b) => b[1] - a[1])[0];
-    if (!bestMethod) return null;
-
-    const [method, count] = bestMethod;
-    const pct = Math.round((count / allLocators.length) * 100);
-    return { method, count, total: allLocators.length, pct };
   }
 
-  function renderFormTree(forms) {
-    formScanLoader.classList.add('hidden');
-    scanFormsBtn.disabled = false;
-    formTreeContainer.innerHTML = '';
-    formTreeContainer.classList.remove('hidden');
-    lastScannedForms = forms || [];
+  if (treeCollapseAllBtn) {
+    treeCollapseAllBtn.addEventListener('click', () => {
+      const arrows = uiTreeContainer.querySelectorAll('.ui-tree-node-arrow');
+      const childContainers = uiTreeContainer.querySelectorAll('.ui-tree-node-children');
+      arrows.forEach(arrow => arrow.classList.remove('expanded'));
+      childContainers.forEach(container => container.classList.add('hidden'));
+    });
+  }
 
-    if (!forms || forms.length === 0) {
-      formCountBadge.textContent = '0 forms';
-      copyFormLocatorsBtn.classList.add('hidden');
-      const empty = document.createElement('div');
-      empty.className = 'form-empty-state';
-      empty.textContent = 'No forms detected on this page.';
-      formTreeContainer.appendChild(empty);
+  // Tree Stability Test Trigger
+  if (treeStabilityTestBtn) {
+    treeStabilityTestBtn.addEventListener('click', () => {
+      if (!isConnected || !activePageId || !scannedUiTree || scannedUiTree.length === 0) return;
+      
+      const flatNodes = flattenUiTree(scannedUiTree);
+      const testableLocators = [...new Set(flatNodes
+        .filter(n => n.locator && (n.type === 'field' || n.type === 'button' || n.type === 'table' || n.type === 'grid' || n.type === 'dialog' || n.type === 'svg' || n.type === 'canvas'))
+        .map(n => n.locator)
+      )];
+
+      if (testableLocators.length === 0) {
+        showError('Stability Test Failed', 'No interactive elements found in the scanned tree.');
+        return;
+      }
+
+      uiTreeContainer.innerHTML = `
+        <div class="loader-container" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:10px;">
+          <div class="spinner"></div>
+          <span style="font-size:11px;color:var(--text-muted);">Running stability checks on ${testableLocators.length} locators...</span>
+        </div>
+      `;
+      treeStabilityTestBtn.disabled = true;
+      scanUiBtn.disabled = true;
+
+      vscode.postMessage({
+        type: 'bulk-stability-test',
+        locatorStrs: testableLocators,
+        runs: 3
+      });
+    });
+  }
+
+  // Scan UI Action Trigger
+  scanUiBtn.addEventListener('click', () => {
+    if (!activePageId) return;
+    uiScanLoader.classList.remove('hidden');
+    uiScanResultsContainer.classList.add('hidden');
+    scanUiBtn.disabled = true;
+    vscode.postMessage({ type: 'scan-ui', pageId: activePageId });
+  });
+
+  // Copy Scanned Code Target
+  copyExportBtn.addEventListener('click', () => {
+    const codeText = exportCodePreview.textContent;
+    if (!codeText) return;
+    navigator.clipboard.writeText(codeText).then(() => {
+      const originalText = copyExportBtn.textContent;
+      copyExportBtn.textContent = '✓ Copied!';
+      setTimeout(() => {
+        copyExportBtn.textContent = originalText;
+      }, 1500);
+    });
+  });
+
+  // Wire exporter configurator triggers to auto-update preview
+  if (exportFormatSelect) {
+    exportFormatSelect.addEventListener('change', () => {
+      triggerCodeExport();
+    });
+  }
+
+  if (exportClassNameInput) {
+    exportClassNameInput.addEventListener('input', () => {
+      triggerCodeExport();
+    });
+  }
+
+  if (exportSectionNamingSelect) {
+    exportSectionNamingSelect.addEventListener('change', () => {
+      triggerCodeExport();
+    });
+  }
+
+  // Compile check states and custom class names to query sidebarProvider generate-export
+  function triggerCodeExport() {
+    if (!scannedUiTree || scannedUiTree.length === 0) return;
+    
+    const format = exportFormatSelect.value;
+    const className = exportClassNameInput.value.trim() || 'ScannedPage';
+    const sectionNaming = exportSectionNamingSelect ? exportSectionNamingSelect.value : 'none';
+    const filteredTree = getFilteredExportTree(scannedUiTree);
+
+    vscode.postMessage({
+      type: 'generate-export',
+      format,
+      className,
+      tree: filteredTree,
+      sectionNaming
+    });
+  }
+
+  function matchesTypeFilter(node, filter) {
+    if (filter === 'all') return true;
+    if (filter === 'field') {
+      return node.type === 'field';
+    }
+    if (filter === 'table_grid') {
+      return node.type === 'table' || node.type === 'grid';
+    }
+    if (filter === 'dialog') {
+      return node.type === 'dialog' || node.type === 'popup';
+    }
+    if (filter === 'section') {
+      return node.type === 'section' || node.type === 'subsection';
+    }
+    if (filter === 'rte') {
+      return node.type === 'rte';
+    }
+    if (filter === 'graphics') {
+      return node.type === 'svg' || node.type === 'canvas' || node.type === 'image';
+    }
+    return node.type === filter;
+  }
+
+  function getLocatorStrategy(locatorStr) {
+    if (!locatorStr) return 'other';
+    if (locatorStr.includes('getByRole')) return 'role';
+    if (locatorStr.includes('getByLabel')) return 'label';
+    if (locatorStr.includes('getByPlaceholder')) return 'placeholder';
+    if (locatorStr.includes('getByTestId') || locatorStr.includes('testid')) return 'testid';
+    if (locatorStr.includes('getByText')) return 'text';
+    return 'other';
+  }
+
+  function flattenUiTree(tree) {
+    let flat = [];
+    function traverse(node) {
+      flat.push(node);
+      if (node.children) {
+        node.children.forEach(traverse);
+      }
+    }
+    tree.forEach(traverse);
+    return flat;
+  }
+
+  function isNodeTypeAllowed(node) {
+    const type = (node.type || '').toLowerCase();
+    const tagName = (node.tagName || '').toLowerCase();
+    const role = (node.role || '').toLowerCase();
+
+    const inputChk = document.getElementById('filter-node-input')?.checked ?? true;
+    const textareaChk = document.getElementById('filter-node-textarea')?.checked ?? true;
+    const checkboxChk = document.getElementById('filter-node-checkbox')?.checked ?? true;
+    const selectChk = document.getElementById('filter-node-select')?.checked ?? true;
+    const buttonChk = document.getElementById('filter-node-button')?.checked ?? true;
+    const tableChk = document.getElementById('filter-node-table')?.checked ?? true;
+    const dialogChk = document.getElementById('filter-node-dialog')?.checked ?? true;
+    const sectionChk = document.getElementById('filter-node-section')?.checked ?? true;
+    const labelChk = document.getElementById('filter-node-label')?.checked ?? true;
+    const svgChk = document.getElementById('filter-node-svg')?.checked ?? true;
+    const imageChk = document.getElementById('filter-node-image')?.checked ?? true;
+
+    if (type === 'table' || type === 'grid') {
+      return tableChk;
+    }
+    if (type === 'dialog' || type === 'popup') {
+      return dialogChk;
+    }
+    if (type === 'section' || type === 'subsection') {
+      return sectionChk;
+    }
+    if (type === 'svg' || type === 'canvas') {
+      return svgChk;
+    }
+    if (type === 'image') {
+      return imageChk;
+    }
+    if (tagName === 'label' || /^h[1-6]$/.test(tagName)) {
+      return labelChk;
+    }
+    if (tagName === 'textarea') {
+      return textareaChk;
+    }
+    if (tagName === 'select' || role === 'combobox') {
+      return selectChk;
+    }
+    if (role === 'checkbox' || role === 'radio') {
+      return checkboxChk;
+    }
+    if (role === 'button' || role === 'link' || tagName === 'button' || tagName === 'a') {
+      return buttonChk;
+    }
+    if (tagName === 'input') {
+      const inputType = (node.meta && node.meta.inputType || '').toLowerCase();
+      if (inputType === 'checkbox' || inputType === 'radio') {
+        return checkboxChk;
+      }
+      return inputChk;
+    }
+    if (type === 'field') {
+      return inputChk;
+    }
+
+    return true;
+  }
+
+  function getFilteredExportTree(tree) {
+    function filterNodeList(nodes) {
+      let result = [];
+      for (const node of nodes) {
+        const isAllowed = isNodeTypeAllowed(node);
+        if (isAllowed && exportNodeSelections[node.id] === false) {
+          continue;
+        }
+
+        const filteredChildren = filterNodeList(node.children || []);
+
+        if (isAllowed) {
+          const clone = { ...node, children: filteredChildren };
+          result.push(clone);
+        } else {
+          const containerName = node.name;
+          const containerType = node.type;
+          const isSectionLike = containerType === 'section' || containerType === 'subsection' || containerType === 'dialog';
+          
+          const updatedChildren = filteredChildren.map(c => {
+            if (isSectionLike) {
+              return { ...c, parentSectionName: c.parentSectionName || containerName };
+            }
+            return c;
+          });
+          result.push(...updatedChildren);
+        }
+      }
+      return result;
+    }
+
+    return filterNodeList(tree);
+  }
+
+  // Render Checkable Tree Selector
+  function renderExportTreeSelector(tree) {
+    exportTreeSelector.innerHTML = '';
+
+    if (!tree || tree.length === 0) {
+      exportTreeSelector.innerHTML = '<div class="form-empty-state">No elements to export.</div>';
       return;
     }
 
-    formCountBadge.textContent = forms.length + ' form' + (forms.length !== 1 ? 's' : '');
-
-    // Render common locator suggestion banner
-    const commonSuggestion = suggestCommonLocator(forms);
-    if (commonSuggestion) {
-      const banner = document.createElement('div');
-      banner.className = 'form-common-locator-banner';
-      banner.innerHTML = `
-        <span class="form-common-icon">💡</span>
-        <span class="form-common-text">
-          Most fields (<strong>${commonSuggestion.count}/${commonSuggestion.total}</strong>, ${commonSuggestion.pct}%) can be located using
-          <code>${commonSuggestion.method}()</code> — prioritize this method for robust selectors.
-        </span>
-      `;
-      formTreeContainer.appendChild(banner);
+    if (activeExportViewMode === 'tree') {
+      renderExportTreeSelectorHierarchical(tree);
+    } else {
+      renderExportTreeSelectorGrouped(tree);
     }
+  }
 
-    // Show Copy All button if any fields exist
-    const hasAnyFields = forms.some(f =>
-      f.sections.some(s => s.fields.length > 0) || f.ungroupedFields.length > 0
-    );
-    copyFormLocatorsBtn.classList.toggle('hidden', !hasAnyFields);
-
-    forms.forEach((form, idx) => {
-      const block = document.createElement('div');
-      block.className = 'form-block';
-
-      // Header
-      const header = document.createElement('div');
-      header.className = 'form-block-header';
-
-      const title = document.createElement('div');
-      title.className = 'form-block-title';
-      const formLabel = form.formName || form.formId || ('Form #' + (idx + 1));
-      title.textContent = '📋 ' + formLabel;
-      if (form.action) {
-        const actionSpan = document.createElement('span');
-        actionSpan.style.color = 'var(--text-muted)';
-        actionSpan.style.fontWeight = '400';
-        actionSpan.textContent = form.action.length > 30 ? form.action.slice(0, 28) + '…' : form.action;
-        title.appendChild(actionSpan);
+  function renderExportTreeSelectorHierarchical(tree) {
+    function getCheckboxState(container) {
+      const childrenWrapper = container.querySelector(':scope > .export-selector-children');
+      if (!childrenWrapper) {
+        const chk = container.querySelector(':scope > .export-selector-item > input[type="checkbox"]');
+        return {
+          checked: chk ? chk.checked : false,
+          indeterminate: chk ? chk.indeterminate : false,
+          hasEnabled: chk ? !chk.disabled : false
+        };
       }
 
-      const toggle = document.createElement('span');
-      toggle.className = 'form-block-toggle open';
-      toggle.textContent = '▶';
+      const childContainers = Array.from(childrenWrapper.querySelectorAll(':scope > .export-selector-node'));
+      let totalEnabled = 0;
+      let checkedCount = 0;
+      let indeterminateCount = 0;
 
-      header.appendChild(title);
-      header.appendChild(toggle);
-
-      const body = document.createElement('div');
-      body.className = 'form-block-body';
-
-      // Render sections
-      form.sections.forEach(section => {
-        const sectionBlock = document.createElement('div');
-        sectionBlock.className = 'form-section-block';
-
-        const sectionTitle = document.createElement('div');
-        sectionTitle.className = 'form-section-title';
-        sectionTitle.textContent = section.title;
-
-        const fieldsList = document.createElement('div');
-        fieldsList.className = 'form-fields-list';
-
-        section.fields.forEach(field => {
-          fieldsList.appendChild(createFormFieldRow(field));
-        });
-
-        sectionBlock.appendChild(sectionTitle);
-        sectionBlock.appendChild(fieldsList);
-        body.appendChild(sectionBlock);
-      });
-
-      // Ungrouped fields
-      if (form.ungroupedFields.length > 0) {
-        const ungroupedTitle = document.createElement('div');
-        ungroupedTitle.className = 'form-section-title';
-        ungroupedTitle.textContent = 'Fields';
-        const fieldsList = document.createElement('div');
-        fieldsList.className = 'form-fields-list';
-        form.ungroupedFields.forEach(field => {
-          fieldsList.appendChild(createFormFieldRow(field));
-        });
-        const wrapper = document.createElement('div');
-        wrapper.className = 'form-section-block';
-        wrapper.appendChild(ungroupedTitle);
-        wrapper.appendChild(fieldsList);
-        body.appendChild(wrapper);
-      }
-
-      if (form.sections.length === 0 && form.ungroupedFields.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'form-empty-state';
-        empty.textContent = 'No visible fields detected.';
-        body.appendChild(empty);
-      }
-
-      // Toggle collapse
-      header.addEventListener('click', () => {
-        const isOpen = !body.classList.contains('hidden');
-        if (isOpen) {
-          body.classList.add('hidden');
-          toggle.classList.remove('open');
+      childContainers.forEach(cc => {
+        const chk = cc.querySelector(':scope > .export-selector-item > input[type="checkbox"]');
+        if (chk && !chk.disabled) {
+          totalEnabled++;
+          if (chk.checked) checkedCount++;
+          if (chk.indeterminate) indeterminateCount++;
         } else {
-          body.classList.remove('hidden');
-          toggle.classList.add('open');
+          const childState = getCheckboxState(cc);
+          if (childState.hasEnabled) {
+            totalEnabled++;
+            if (childState.checked) checkedCount++;
+            else if (childState.indeterminate) indeterminateCount++;
+          }
         }
       });
 
-      block.appendChild(header);
-      block.appendChild(body);
-      formTreeContainer.appendChild(block);
+      if (totalEnabled === 0) {
+        return { checked: false, indeterminate: false, hasEnabled: false };
+      }
+
+      if (checkedCount === totalEnabled) {
+        return { checked: true, indeterminate: false, hasEnabled: true };
+      } else if (checkedCount === 0 && indeterminateCount === 0) {
+        return { checked: false, indeterminate: false, hasEnabled: true };
+      } else {
+        return { checked: false, indeterminate: true, hasEnabled: true };
+      }
+    }
+
+    function updateAncestors(chkElement) {
+      let currentContainer = chkElement.closest('.export-selector-node');
+      if (!currentContainer) return;
+
+      let parentWrapper = currentContainer.parentElement;
+      while (parentWrapper && parentWrapper.classList.contains('export-selector-children')) {
+        const parentContainer = parentWrapper.parentElement;
+        if (!parentContainer) break;
+
+        const parentItem = parentContainer.querySelector(':scope > .export-selector-item');
+        const parentChk = parentItem ? parentItem.querySelector('input[type="checkbox"]') : null;
+
+        if (parentChk) {
+          const parentId = parentChk.id.replace('chk-export-', '');
+          if (parentChk.disabled) {
+            parentChk.checked = false;
+            parentChk.indeterminate = false;
+            exportNodeSelections[parentId] = false;
+          } else {
+            const state = getCheckboxState(parentContainer);
+            parentChk.checked = state.checked;
+            parentChk.indeterminate = state.indeterminate;
+            exportNodeSelections[parentId] = state.checked || state.indeterminate;
+          }
+        }
+
+        currentContainer = parentContainer;
+        parentWrapper = currentContainer.parentElement;
+      }
+    }
+
+    function createSelectorNode(node) {
+      const isMatch = isNodeTypeAllowed(node);
+
+      function hasMatchingDescendant(n) {
+        if (isNodeTypeAllowed(n)) return true;
+        if (n.children) {
+          for (let i = 0; i < n.children.length; i++) {
+            if (hasMatchingDescendant(n.children[i])) return true;
+          }
+        }
+        return false;
+      }
+
+      if (!hasMatchingDescendant(node)) {
+        return null;
+      }
+
+      const container = document.createElement('div');
+      container.className = 'export-selector-node';
+
+      const item = document.createElement('div');
+      item.className = 'export-selector-item';
+      if (!isMatch) {
+        item.style.opacity = '0.5';
+      }
+
+      // Collapse/expand toggle
+      const toggle = document.createElement('span');
+      toggle.className = 'export-node-toggle';
+      const hasChildren = node.children && node.children.length > 0;
+      if (hasChildren) {
+        toggle.textContent = '▶';
+      } else {
+        toggle.textContent = '◽';
+        toggle.style.opacity = '0.3';
+      }
+      item.appendChild(toggle);
+
+      // Checkbox
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.id = 'chk-export-' + node.id;
+      if (exportNodeSelections[node.id] === undefined) {
+        exportNodeSelections[node.id] = true;
+      }
+      chk.checked = isMatch ? exportNodeSelections[node.id] : false;
+      chk.disabled = !isMatch;
+      item.appendChild(chk);
+
+      // Label
+      const label = document.createElement('label');
+      label.setAttribute('for', chk.id);
+      label.style.cursor = 'pointer';
+      label.style.userSelect = 'none';
+      label.style.flexGrow = '1';
+      
+      const typeIcons = {
+        page: '📄',
+        section: '📁',
+        subsection: '📂',
+        field: '⚙️',
+        table: '📊',
+        grid: '🔢',
+        dialog: '💬',
+        popup: '🔔',
+        tab: '🏷️',
+        window: '💻',
+        image: '🖼️',
+        svg: '🎨',
+        canvas: '🖌️',
+        rte: '📝',
+        menu: '🍔',
+        toolbar: '🛠️',
+        navigation: '🧭'
+      };
+      const emoji = typeIcons[node.type] || '◽';
+      label.textContent = emoji + ' ' + node.name + ' (' + node.type + ')';
+      item.appendChild(label);
+
+      container.appendChild(item);
+
+      // Children container
+      const childrenWrapper = document.createElement('div');
+      childrenWrapper.className = 'export-selector-children hidden'; // Collapsed by default
+
+      if (hasChildren) {
+        node.children.forEach(child => {
+          const childEl = createSelectorNode(child);
+          if (childEl) {
+            childrenWrapper.appendChild(childEl);
+          }
+        });
+        container.appendChild(childrenWrapper);
+      }
+
+      // Hook collapse/expand click
+      if (hasChildren) {
+        toggle.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isCollapsed = childrenWrapper.classList.contains('hidden');
+          if (isCollapsed) {
+            childrenWrapper.classList.remove('hidden');
+            toggle.classList.add('expanded');
+          } else {
+            childrenWrapper.classList.add('hidden');
+            toggle.classList.remove('expanded');
+          }
+        });
+      }
+
+      // Checkbox change listener
+      chk.addEventListener('change', () => {
+        const checked = chk.checked;
+        chk.indeterminate = false;
+        exportNodeSelections[node.id] = checked;
+
+        function setChildrenChecked(n, val) {
+          if (n.children) {
+            n.children.forEach(c => {
+              exportNodeSelections[c.id] = val;
+              const childChk = document.getElementById('chk-export-' + c.id);
+              if (childChk) {
+                childChk.checked = isNodeTypeAllowed(c) ? val : false;
+                childChk.indeterminate = false;
+              }
+              setChildrenChecked(c, val);
+            });
+          }
+        }
+        setChildrenChecked(node, checked);
+        updateAncestors(chk);
+        triggerCodeExport();
+      });
+
+      return container;
+    }
+
+    tree.forEach(n => {
+      const nodeEl = createSelectorNode(n);
+      if (nodeEl) {
+        exportTreeSelector.appendChild(nodeEl);
+      }
+    });
+
+    // Initialize indeterminate states from bottom up
+    const leafNodes = exportTreeSelector.querySelectorAll('.export-selector-node');
+    leafNodes.forEach(nodeContainer => {
+      const childrenWrapper = nodeContainer.querySelector(':scope > .export-selector-children');
+      const hasChildren = childrenWrapper && childrenWrapper.children.length > 0;
+      if (!hasChildren) {
+        const leafChk = nodeContainer.querySelector(':scope > .export-selector-item > input[type="checkbox"]');
+        if (leafChk && !leafChk.disabled) {
+          updateAncestors(leafChk);
+        }
+      }
     });
   }
 
-  function createFormFieldRow(field) {
-    const row = document.createElement('div');
-    row.className = 'form-field-row';
+  function renderExportTreeSelectorGrouped(tree) {
+    const flatNodes = flattenUiTree(tree).filter(isNodeTypeAllowed);
 
-    const info = document.createElement('div');
-    info.className = 'form-field-info';
+    const groups = {
+      role: { name: 'Role Locators (getByRole)', items: [] },
+      label: { name: 'Label Locators (getByLabel)', items: [] },
+      placeholder: { name: 'Placeholder Locators (getByPlaceholder)', items: [] },
+      testid: { name: 'Test ID Locators (getByTestId)', items: [] },
+      text: { name: 'Text Locators (getByText)', items: [] },
+      other: { name: 'Fragile / Structural Locators (locator)', items: [] }
+    };
 
-    const labelEl = document.createElement('div');
-    labelEl.className = 'form-field-label' + (field.label ? '' : ' no-label');
-    labelEl.textContent = field.label || '(no label)';
-    labelEl.title = field.label || '';
+    flatNodes.forEach(node => {
+      if (node.locator) {
+        const strategy = getLocatorStrategy(node.locator);
+        groups[strategy].items.push(node);
+      }
+    });
 
-    const meta = document.createElement('div');
-    meta.className = 'form-field-meta';
+    Object.keys(groups).forEach(key => {
+      const group = groups[key];
+      if (group.items.length === 0) return;
 
-    // Tag + type badge
-    const tagSpan = document.createElement('span');
-    tagSpan.textContent = '<' + field.tagName + (field.inputType && field.inputType !== 'text' ? ' type=' + field.inputType : '') + '>';
-    meta.appendChild(tagSpan);
+      const groupContainer = document.createElement('div');
+      groupContainer.className = 'export-selector-node';
 
-    if (field.role && field.role !== 'generic') {
-      const roleSpan = document.createElement('span');
-      roleSpan.textContent = field.role;
-      meta.appendChild(roleSpan);
+      const groupItem = document.createElement('div');
+      groupItem.className = 'export-selector-item';
+      groupItem.style.fontWeight = 'bold';
+      groupItem.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+
+      const toggle = document.createElement('span');
+      toggle.className = 'export-node-toggle';
+      toggle.textContent = '▶';
+      groupItem.appendChild(toggle);
+
+      // Checkbox for the group
+      const groupChk = document.createElement('input');
+      groupChk.type = 'checkbox';
+      groupChk.id = 'chk-group-' + key;
+      
+      const allChecked = group.items.every(item => exportNodeSelections[item.id] !== false);
+      const noneChecked = group.items.every(item => exportNodeSelections[item.id] === false);
+      groupChk.checked = allChecked;
+      groupChk.indeterminate = !allChecked && !noneChecked;
+      groupItem.appendChild(groupChk);
+
+      const label = document.createElement('label');
+      label.setAttribute('for', groupChk.id);
+      label.style.cursor = 'pointer';
+      label.textContent = '📁 ' + group.name + ' (' + group.items.length + ')';
+      groupItem.appendChild(label);
+
+      groupContainer.appendChild(groupItem);
+
+      const childrenWrapper = document.createElement('div');
+      childrenWrapper.className = 'export-selector-children hidden'; // Collapsed by default
+
+      group.items.forEach(node => {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'export-selector-node';
+
+        const row = document.createElement('div');
+        row.className = 'export-selector-item';
+
+        const dot = document.createElement('span');
+        dot.className = 'export-node-toggle';
+        dot.textContent = '◽';
+        dot.style.opacity = '0.3';
+        row.appendChild(dot);
+
+        const chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.id = 'chk-export-' + node.id;
+        if (exportNodeSelections[node.id] === undefined) {
+          exportNodeSelections[node.id] = true;
+        }
+        chk.checked = exportNodeSelections[node.id];
+        row.appendChild(chk);
+
+        const label = document.createElement('label');
+        label.setAttribute('for', chk.id);
+        label.style.cursor = 'pointer';
+        label.style.flexGrow = '1';
+        label.style.fontFamily = 'SFMono-Regular, Consolas, monospace';
+        label.style.fontSize = '10px';
+        label.textContent = node.name + ' ➔ ' + node.locator;
+        row.appendChild(label);
+
+        itemEl.appendChild(row);
+        childrenWrapper.appendChild(itemEl);
+
+        // Individual change listener
+        chk.addEventListener('change', () => {
+          exportNodeSelections[node.id] = chk.checked;
+          
+          const activeChks = Array.from(childrenWrapper.querySelectorAll('input[type="checkbox"]'));
+          const checkedCount = activeChks.filter(c => c.checked).length;
+          groupChk.checked = checkedCount === activeChks.length;
+          groupChk.indeterminate = checkedCount > 0 && checkedCount < activeChks.length;
+
+          triggerCodeExport();
+        });
+      });
+
+      groupContainer.appendChild(childrenWrapper);
+
+      // Hook collapse/expand click
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isCollapsed = childrenWrapper.classList.contains('hidden');
+        if (isCollapsed) {
+          childrenWrapper.classList.remove('hidden');
+          toggle.classList.add('expanded');
+        } else {
+          childrenWrapper.classList.add('hidden');
+          toggle.classList.remove('expanded');
+        }
+      });
+
+      // Group change listener
+      groupChk.addEventListener('change', () => {
+        const val = groupChk.checked;
+        groupChk.indeterminate = false;
+        group.items.forEach(node => {
+          exportNodeSelections[node.id] = val;
+          const childChk = document.getElementById('chk-export-' + node.id);
+          if (childChk) childChk.checked = val;
+        });
+        triggerCodeExport();
+      });
+
+      exportTreeSelector.appendChild(groupContainer);
+    });
+  }
+
+  // Hook View Mode Buttons
+  if (viewModeTree && viewModeLocator) {
+    viewModeTree.addEventListener('click', () => {
+      viewModeTree.classList.add('active');
+      viewModeLocator.classList.remove('active');
+      activeExportViewMode = 'tree';
+      renderExportTreeSelector(scannedUiTree);
+    });
+
+    viewModeLocator.addEventListener('click', () => {
+      viewModeLocator.classList.add('active');
+      viewModeTree.classList.remove('active');
+      activeExportViewMode = 'locator';
+      renderExportTreeSelector(scannedUiTree);
+    });
+  }
+
+  // Hook Select All / Clear All Buttons
+  if (exportSelectAllBtn) {
+    exportSelectAllBtn.addEventListener('click', () => {
+      const allNodes = flattenUiTree(scannedUiTree);
+      allNodes.forEach(node => {
+        exportNodeSelections[node.id] = true;
+      });
+      const checkboxes = exportTreeSelector.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach(chk => {
+        chk.checked = true;
+        chk.indeterminate = false;
+      });
+      triggerCodeExport();
+    });
+  }
+
+  if (exportClearAllBtn) {
+    exportClearAllBtn.addEventListener('click', () => {
+      const allNodes = flattenUiTree(scannedUiTree);
+      allNodes.forEach(node => {
+        exportNodeSelections[node.id] = false;
+      });
+      const checkboxes = exportTreeSelector.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach(chk => {
+        chk.checked = false;
+        chk.indeterminate = false;
+      });
+      triggerCodeExport();
+    });
+  }
+
+  // Hook filter checkboxes listeners
+  const filterInputs = [
+    'filter-node-input',
+    'filter-node-textarea',
+    'filter-node-checkbox',
+    'filter-node-select',
+    'filter-node-button',
+    'filter-node-table',
+    'filter-node-dialog',
+    'filter-node-section',
+    'filter-node-label',
+    'filter-node-svg',
+    'filter-node-image'
+  ];
+
+  filterInputs.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', () => {
+        renderExportTreeSelector(scannedUiTree);
+        triggerCodeExport();
+      });
+    }
+  });
+
+  const filterSelectAllBtn = document.getElementById('filter-select-all-btn');
+  const filterClearAllBtn = document.getElementById('filter-clear-all-btn');
+
+  if (filterSelectAllBtn) {
+    filterSelectAllBtn.addEventListener('click', () => {
+      filterInputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.checked = true;
+      });
+      renderExportTreeSelector(scannedUiTree);
+      triggerCodeExport();
+    });
+  }
+
+  if (filterClearAllBtn) {
+    filterClearAllBtn.addEventListener('click', () => {
+      filterInputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.checked = false;
+      });
+      renderExportTreeSelector(scannedUiTree);
+      triggerCodeExport();
+    });
+  }
+
+  // Render Interactive Collapsible UI Tree
+  function renderUiTree(tree) {
+    uiTreeContainer.innerHTML = '';
+    uiNodeDetailPanel.classList.add('hidden');
+    selectedTreeNode = null;
+
+    if (!tree || tree.length === 0) {
+      uiTreeContainer.innerHTML = '<div class="form-empty-state">No structures classified.</div>';
+      return;
     }
 
-    if (field.required) {
-      const reqSpan = document.createElement('span');
-      reqSpan.className = 'form-field-required';
-      reqSpan.textContent = '* required';
-      meta.appendChild(reqSpan);
+    const rootList = document.createElement('div');
+    rootList.className = 'ui-tree-root';
+
+    tree.forEach(node => {
+      rootList.appendChild(createTreeNodeElement(node));
+    });
+
+    uiTreeContainer.appendChild(rootList);
+  }
+
+  // Create Individual Node Element (Recursive)
+  function createTreeNodeElement(node) {
+    const container = document.createElement('div');
+    container.className = 'ui-tree-node';
+
+    const header = document.createElement('div');
+    header.className = 'ui-tree-node-header';
+    header.setAttribute('data-type', node.type);
+    header.setAttribute('data-node-id', node.id);
+
+    // Expand/Collapse arrow for nodes with children
+    const arrow = document.createElement('span');
+    arrow.className = 'ui-tree-node-arrow';
+    if (node.children && node.children.length > 0) {
+      arrow.textContent = '▶';
+      arrow.classList.add('expanded');
+    }
+    header.appendChild(arrow);
+
+    // Emoji icons representing node type
+    const icon = document.createElement('span');
+    icon.className = 'ui-tree-node-icon';
+    const typeIcons = {
+      page: '📄',
+      section: '📁',
+      subsection: '📂',
+      field: '⚙️',
+      table: '📊',
+      grid: '🔢',
+      dialog: '💬',
+      popup: '🔔',
+      tab: '🏷️',
+      window: '💻',
+      image: '🖼️',
+      svg: '🎨',
+      canvas: '🖌️',
+      rte: '📝',
+      menu: '🍔',
+      toolbar: '🛠️',
+      navigation: '🧭'
+    };
+    icon.textContent = typeIcons[node.type] || '◽';
+    header.appendChild(icon);
+
+    // Node readable label
+    const label = document.createElement('span');
+    label.className = 'ui-tree-node-label';
+    label.textContent = node.name;
+    header.appendChild(label);
+
+    // Tag name badge
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'ui-tree-node-type';
+    typeBadge.textContent = node.type;
+    header.appendChild(typeBadge);
+
+    if (node.stabilityScore !== undefined) {
+      const badge = document.createElement('span');
+      badge.className = 'stability-badge ' + (node.stabilityScore >= 80 ? 'high' : node.stabilityScore >= 50 ? 'med' : 'low');
+      badge.textContent = `${node.stabilityScore}% stable`;
+      header.appendChild(badge);
     }
 
-    if (field.isReadOnly) {
-      const roSpan = document.createElement('span');
-      roSpan.className = 'form-field-readonly';
-      roSpan.textContent = '🔒 readonly';
-      meta.appendChild(roSpan);
+    container.appendChild(header);
+
+    // Children wrapper
+    const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'ui-tree-node-children';
+
+    if (node.children && node.children.length > 0) {
+      node.children.forEach(child => {
+        childrenContainer.appendChild(createTreeNodeElement(child));
+      });
+      container.appendChild(childrenContainer);
     }
 
-    // Suggested locator preview
-    const locatorPreview = document.createElement('div');
-    locatorPreview.className = 'form-field-locator-preview';
-    locatorPreview.textContent = field.suggestedLocator;
-    locatorPreview.title = 'Click "Use" to load this locator into the playground';
+    // Toggle collapse on arrow click
+    arrow.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isExpanded = arrow.classList.contains('expanded');
+      if (isExpanded) {
+        arrow.classList.remove('expanded');
+        childrenContainer.classList.add('hidden');
+      } else {
+        arrow.classList.add('expanded');
+        childrenContainer.classList.remove('hidden');
+      }
+    });
 
-    info.appendChild(labelEl);
-    info.appendChild(meta);
-    info.appendChild(locatorPreview);
+    // Select node on header click
+    header.addEventListener('click', (e) => {
+      e.stopPropagation();
+      
+      // Clear previous tree highlights
+      document.querySelectorAll('.ui-tree-node-header').forEach(h => h.classList.remove('selected'));
+      header.classList.add('selected');
+
+      // Set active selection and show detail panel
+      selectedTreeNode = node;
+      showNodeDetails(node);
+
+      // Trigger live element highlighting in page connection context
+      if (node.locator && isConnected && activePageId) {
+        triggerLiveHighlight(node.locator);
+      }
+    });
+
+    return container;
+  }
+
+  // Display Node Information inside Preview Panel
+  function showNodeDetails(node) {
+    uiNodeDetailPanel.classList.remove('hidden');
+    uiNodeDetailContent.innerHTML = '';
+
+    const grid = document.createElement('div');
+    grid.className = 'node-meta-grid';
+
+    const fields = [
+      { label: 'Name', val: node.name, fullWidth: true },
+      { label: 'Type', val: node.type },
+      { label: 'Tag Name', val: node.tagName },
+      { label: 'Role', val: node.role || 'none' },
+      { label: 'Playwright Locator', val: node.locator, fullWidth: true }
+    ];
+
+    // Meta additions based on node types
+    if (node.type === 'field' && node.meta) {
+      if (node.meta.required !== undefined) fields.push({ label: 'Required', val: node.meta.required ? 'Yes' : 'No' });
+      if (node.meta.readOnly !== undefined) fields.push({ label: 'Read-only', val: node.meta.readOnly ? 'Yes' : 'No' });
+      if (node.meta.placeholder) fields.push({ label: 'Placeholder', val: node.meta.placeholder, fullWidth: true });
+    } else if ((node.type === 'table' || node.type === 'grid') && node.meta) {
+      if (node.meta.rowCount !== undefined) fields.push({ label: 'Rows', val: String(node.meta.rowCount) });
+      if (node.meta.columnCount !== undefined) fields.push({ label: 'Columns', val: String(node.meta.columnCount) });
+      if (node.meta.headers && node.meta.headers.length > 0) {
+        fields.push({ label: 'Headers', val: node.meta.headers.join(', '), fullWidth: true });
+      }
+    } else if (node.type === 'rte' && node.meta) {
+      if (node.meta.editorType) fields.push({ label: 'Framework', val: node.meta.editorType });
+    } else if (node.type === 'dialog' && node.meta) {
+      if (node.meta.isOpen !== undefined) fields.push({ label: 'Open', val: node.meta.isOpen ? 'Yes' : 'No' });
+    } else if ((node.type === 'svg' || node.type === 'canvas') && node.meta) {
+      if (node.meta.centerClickPoint) {
+        fields.push({ label: 'Center Click (Page)', val: `X: ${node.meta.centerClickPoint.x}, Y: ${node.meta.centerClickPoint.y}`, fullWidth: true });
+      }
+      if (node.meta.boundingOffsets) {
+        fields.push({
+          label: 'Bounding Offsets',
+          val: `Top: ${node.meta.boundingOffsets.top}px, Left: ${node.meta.boundingOffsets.left}px, Width: ${node.meta.boundingOffsets.width}px, Height: ${node.meta.boundingOffsets.height}px`,
+          fullWidth: true
+        });
+      }
+      if (node.meta.subElements && node.meta.subElements.length > 0) {
+        const subStr = node.meta.subElements
+          .map(s => {
+            const idStr = s.id ? ` #${s.id}` : '';
+            const clsStr = s.className ? ` .${s.className}` : '';
+            return `<${s.tagName}${idStr}${clsStr}> -> [x:${s.relativeBox.x}, y:${s.relativeBox.y}, w:${s.relativeBox.width}, h:${s.relativeBox.height}]`;
+          })
+          .join('\n');
+        fields.push({ label: 'Sub-Elements Coordinate Map', val: subStr, fullWidth: true });
+      }
+    }
+
+    fields.forEach(f => {
+      const item = document.createElement('div');
+      item.className = 'node-meta-item';
+      if (f.fullWidth) item.classList.add('full-width');
+
+      const label = document.createElement('span');
+      label.className = 'node-meta-label';
+      label.textContent = f.label;
+
+      const val = document.createElement('span');
+      val.className = 'node-meta-val';
+      val.textContent = f.val;
+
+      item.appendChild(label);
+      item.appendChild(val);
+      grid.appendChild(item);
+    });
+
+    uiNodeDetailContent.appendChild(grid);
+
+    // Render Simulation Controls
+    const hasSimulateFill = node.type === 'field' || node.tagName?.toLowerCase() === 'input' || node.tagName?.toLowerCase() === 'textarea' || node.tagName?.toLowerCase() === 'select' || (node.role && ['textbox', 'combobox', 'checkbox', 'radio'].includes(node.role));
+    const hasSimulateClick = node.type === 'svg' || node.type === 'canvas';
+
+    if (betaFeaturesEnabled && (hasSimulateFill || hasSimulateClick)) {
+      const simSection = document.createElement('div');
+      simSection.className = 'simulation-section';
+
+      const simTitle = document.createElement('div');
+      simTitle.className = 'simulation-section-title';
+      simTitle.textContent = '⚡ Interactive Simulation';
+      simSection.appendChild(simTitle);
+
+      const simInputs = document.createElement('div');
+      simInputs.className = 'simulation-inputs';
+
+      const statusSpan = document.createElement('span');
+      statusSpan.style.fontSize = '10px';
+      statusSpan.style.marginLeft = '8px';
+      statusSpan.style.alignSelf = 'center';
+      activeSimulationStatus = statusSpan;
+
+      if (hasSimulateFill) {
+        const valInput = document.createElement('input');
+        valInput.type = 'text';
+        valInput.id = 'sim-fill-value';
+        valInput.placeholder = node.tagName?.toLowerCase() === 'select' ? 'Option value/text...' : 'Enter test value...';
+        simInputs.appendChild(valInput);
+
+        const fillBtn = document.createElement('button');
+        fillBtn.className = 'btn btn-primary';
+        fillBtn.textContent = 'Fill';
+        fillBtn.style.padding = '4px 10px';
+        fillBtn.style.fontSize = '11px';
+        fillBtn.addEventListener('click', () => {
+          const val = valInput.value;
+          if (node.locator) {
+            statusSpan.textContent = 'Simulating...';
+            statusSpan.style.color = 'var(--text-muted)';
+            vscode.postMessage({
+              type: 'simulate-fill',
+              locatorStr: node.locator,
+              value: val
+            });
+          }
+        });
+        simInputs.appendChild(fillBtn);
+      } else if (hasSimulateClick) {
+        const xInput = document.createElement('input');
+        xInput.type = 'number';
+        xInput.id = 'sim-click-x';
+        xInput.placeholder = 'X';
+        xInput.title = 'X coordinate relative to element top-left';
+        simInputs.appendChild(xInput);
+
+        const yInput = document.createElement('input');
+        yInput.type = 'number';
+        yInput.id = 'sim-click-y';
+        yInput.placeholder = 'Y';
+        yInput.title = 'Y coordinate relative to element top-left';
+        simInputs.appendChild(yInput);
+
+        const clickBtn = document.createElement('button');
+        clickBtn.className = 'btn btn-primary';
+        clickBtn.textContent = 'Click';
+        clickBtn.style.padding = '4px 10px';
+        clickBtn.style.fontSize = '11px';
+        clickBtn.addEventListener('click', () => {
+          const x = xInput.value ? Number(xInput.value) : undefined;
+          const y = yInput.value ? Number(yInput.value) : undefined;
+          if (node.locator) {
+            statusSpan.textContent = 'Clicking...';
+            statusSpan.style.color = 'var(--text-muted)';
+            vscode.postMessage({
+              type: 'simulate-click',
+              locatorStr: node.locator,
+              x,
+              y
+            });
+          }
+        });
+        simInputs.appendChild(clickBtn);
+      }
+
+      simInputs.appendChild(statusSpan);
+      simSection.appendChild(simInputs);
+      uiNodeDetailContent.appendChild(simSection);
+    }
+
+    // Detail Action buttons
+    const actions = document.createElement('div');
+    actions.className = 'node-detail-actions';
 
     const useBtn = document.createElement('button');
-    useBtn.className = 'form-field-use-btn';
-    useBtn.title = 'Load ' + field.suggestedLocator + ' into Locator Playground';
-    useBtn.innerHTML = '▶ Use';
-    useBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      locatorInput.value = field.suggestedLocator;
-      evaluateBtn.disabled = false;
-      saveState(field.suggestedLocator);
-      triggerEvaluation();
+    useBtn.className = 'btn btn-secondary btn-full';
+    useBtn.textContent = '▶ Load to Playground';
+    useBtn.title = 'Loads this element selector into locator playground input';
+    useBtn.addEventListener('click', () => {
+      if (node.locator) {
+        locatorInput.value = node.locator;
+        evaluateBtn.disabled = false;
+        saveState(node.locator);
+        triggerEvaluation();
+      }
     });
 
-    row.appendChild(info);
-    row.appendChild(useBtn);
-    return row;
+    const copyLocatorBtn = document.createElement('button');
+    copyLocatorBtn.className = 'btn btn-secondary';
+    copyLocatorBtn.textContent = '📋 Copy';
+    copyLocatorBtn.addEventListener('click', () => {
+      if (node.locator) {
+        navigator.clipboard.writeText(node.locator).then(() => {
+          const original = copyLocatorBtn.textContent;
+          copyLocatorBtn.textContent = '✓';
+          setTimeout(() => { copyLocatorBtn.textContent = original; }, 1000);
+        });
+      }
+    });
+
+    actions.appendChild(useBtn);
+    actions.appendChild(copyLocatorBtn);
+    uiNodeDetailContent.appendChild(actions);
+
+    // Section/Container Child Inventory
+    if (node.children && node.children.length > 0) {
+      const descendants = [];
+      function collectDescendants(n) {
+        if (n.children) {
+          n.children.forEach(child => {
+            descendants.push(child);
+            collectDescendants(child);
+          });
+        }
+      }
+      collectDescendants(node);
+
+      if (descendants.length > 0) {
+        const title = document.createElement('div');
+        title.className = 'inventory-title';
+        title.textContent = 'Section Inventory (' + descendants.length + ' elements)';
+        uiNodeDetailContent.appendChild(title);
+
+        // Counts
+        let inputCount = 0;
+        let textareaCount = 0;
+        let checkboxCount = 0;
+        let buttonCount = 0;
+        let tableCount = 0;
+        let selectCount = 0;
+        let rteCount = 0;
+
+        descendants.forEach(desc => {
+          const type = (desc.type || '').toLowerCase();
+          const tagName = (desc.tagName || '').toLowerCase();
+          const role = (desc.role || '').toLowerCase();
+
+          if (type === 'table' || type === 'grid') {
+            tableCount++;
+          } else if (type === 'rte') {
+            rteCount++;
+          } else if (tagName === 'textarea') {
+            textareaCount++;
+          } else if (tagName === 'select' || role === 'combobox') {
+            selectCount++;
+          } else if (role === 'checkbox' || role === 'radio') {
+            checkboxCount++;
+          } else if (role === 'button' || role === 'link' || tagName === 'button' || tagName === 'a') {
+            buttonCount++;
+          } else if (tagName === 'input') {
+            if (desc.locator.includes('checkbox') || desc.locator.includes('radio')) {
+              checkboxCount++;
+            } else {
+              inputCount++;
+            }
+          } else if (type === 'field') {
+            inputCount++;
+          }
+        });
+
+        const summary = document.createElement('div');
+        summary.className = 'inventory-badges';
+
+        const addBadge = (lbl, count, emoji) => {
+          if (count > 0) {
+            const badge = document.createElement('div');
+            badge.className = 'inventory-badge';
+            badge.textContent = emoji + ' ' + count + ' ' + lbl + (count > 1 ? 's' : '');
+            summary.appendChild(badge);
+          }
+        };
+
+        addBadge('Input', inputCount, '⚙️');
+        addBadge('Textarea', textareaCount, '📝');
+        addBadge('Checkbox/Radio', checkboxCount, '☑️');
+        addBadge('Dropdown', selectCount, '🏷️');
+        addBadge('Button/Link', buttonCount, '🍔');
+        addBadge('Table/Grid', tableCount, '📊');
+        addBadge('RTE', rteCount, '📝');
+
+        uiNodeDetailContent.appendChild(summary);
+
+        // List
+        const list = document.createElement('div');
+        list.className = 'inventory-list';
+
+        descendants.forEach(desc => {
+          const item = document.createElement('div');
+          item.className = 'inventory-item';
+
+          const details = document.createElement('div');
+          details.className = 'inventory-item-details';
+
+          // Tag/Type badge
+          const tagSpan = document.createElement('span');
+          tagSpan.className = 'inventory-item-tag';
+          
+          let displayTag = (desc.tagName || desc.type || '').toUpperCase();
+          const descRole = (desc.role || '').toLowerCase();
+          if (descRole === 'checkbox') displayTag = 'CHECKBOX';
+          else if (descRole === 'radio') displayTag = 'RADIO';
+          tagSpan.textContent = displayTag;
+          details.appendChild(tagSpan);
+
+          // Name
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'inventory-item-name';
+          nameSpan.textContent = desc.name || 'Unnamed';
+          details.appendChild(nameSpan);
+
+          // Locator (inside details as sibling)
+          const locSpan = document.createElement('span');
+          locSpan.className = 'inventory-item-locator';
+          locSpan.textContent = desc.locator || '';
+          locSpan.title = 'Click to load locator to playground';
+          locSpan.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (desc.locator) {
+              locatorInput.value = desc.locator;
+              evaluateBtn.disabled = false;
+              saveState(desc.locator);
+              triggerEvaluation();
+            }
+          });
+          details.appendChild(locSpan);
+
+          item.appendChild(details);
+
+          // Actions
+          const actionsDiv = document.createElement('div');
+          actionsDiv.className = 'node-inventory-item-actions';
+
+          // Copy Button
+          if (desc.locator) {
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'btn-mini';
+            copyBtn.textContent = '📋';
+            copyBtn.title = 'Copy Locator';
+            copyBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              navigator.clipboard.writeText(desc.locator).then(() => {
+                copyBtn.textContent = '✓';
+                setTimeout(() => { copyBtn.textContent = '📋'; }, 1000);
+              });
+            });
+            actionsDiv.appendChild(copyBtn);
+          }
+
+          item.appendChild(actionsDiv);
+
+          // Click on row to navigate to tree node
+          item.addEventListener('click', () => {
+            const targetHeader = uiTreeContainer.querySelector('[data-node-id="' + desc.id + '"]');
+            if (targetHeader) {
+              let parent = targetHeader.parentElement;
+              while (parent && parent !== uiTreeContainer) {
+                if (parent.classList.contains('ui-tree-node-children')) {
+                  parent.classList.remove('hidden');
+                  const parentNode = parent.parentElement;
+                  if (parentNode) {
+                    const arrow = parentNode.querySelector(':scope > .ui-tree-node-header > .ui-tree-node-arrow');
+                    if (arrow) arrow.classList.add('expanded');
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              targetHeader.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              targetHeader.click();
+            }
+          });
+
+          list.appendChild(item);
+        });
+
+        uiNodeDetailContent.appendChild(list);
+      }
+    }
   }
+
+  // Render Accessibility Audit Issues list
+  function renderAccessibilityIssues(issues) {
+    accessibilityIssuesList.innerHTML = '';
+
+    if (!issues || issues.length === 0) {
+      accessibilitySummaryText.textContent = '✓ No accessibility violations detected!';
+      accessibilitySummaryText.style.color = 'var(--color-success)';
+      return;
+    }
+
+    const errorsCount = issues.filter(i => i.severity === 'error').length;
+    const warningsCount = issues.filter(i => i.severity === 'warning').length;
+    accessibilitySummaryText.textContent = `Found ${errorsCount} errors and ${warningsCount} warnings.`;
+    accessibilitySummaryText.style.color = errorsCount > 0 ? 'var(--color-danger)' : 'var(--color-warning)';
+
+    issues.forEach(issue => {
+      const item = document.createElement('div');
+      item.className = 'accessibility-item ' + (issue.severity === 'error' ? 'error' : '');
+
+      const icon = document.createElement('span');
+      icon.className = 'accessibility-item-icon';
+      icon.textContent = issue.severity === 'error' ? '❌' : '⚠️';
+      item.appendChild(icon);
+
+      const body = document.createElement('div');
+      body.className = 'accessibility-item-body';
+
+      const desc = document.createElement('span');
+      desc.className = 'accessibility-item-desc';
+      desc.textContent = issue.description;
+      body.appendChild(desc);
+
+      if (issue.suggestedLocator) {
+        const locator = document.createElement('span');
+        locator.className = 'accessibility-item-locator';
+        locator.textContent = issue.suggestedLocator;
+        locator.title = 'Click to load locator representing element';
+        locator.addEventListener('click', (e) => {
+          e.stopPropagation();
+          locatorInput.value = issue.suggestedLocator;
+          evaluateBtn.disabled = false;
+          saveState(issue.suggestedLocator);
+          triggerEvaluation();
+        });
+        body.appendChild(locator);
+      }
+
+      item.appendChild(body);
+      accessibilityIssuesList.appendChild(item);
+    });
+  }
+
+  // Render Metrics and Score Gauge
+  function renderReadinessMetrics(readiness, health) {
+    // Score Badge & Gauge
+    uiReadinessBadge.textContent = readiness.score + '% Readiness';
+    readinessScoreText.textContent = readiness.score + '%';
+
+    // Update gauge radial color based on score
+    const radial = document.querySelector('.readiness-radial');
+    if (radial) {
+      const color = readiness.score >= 80 ? 'var(--color-success)' : readiness.score >= 50 ? 'var(--color-warning)' : 'var(--color-danger)';
+      radial.style.borderColor = color;
+      radial.style.boxShadow = `0 0 12px ${color}33`;
+    }
+
+    // Factors list
+    readinessFactorsList.innerHTML = '';
+    readiness.factors.forEach(factor => {
+      const div = document.createElement('div');
+      div.className = 'factor-item ' + (factor.positive ? 'positive' : 'negative');
+      
+      const icon = document.createElement('span');
+      icon.className = 'factor-icon';
+      icon.textContent = factor.positive ? '✓' : '✗';
+      
+      const text = document.createElement('span');
+      text.className = 'factor-text';
+      text.textContent = factor.text;
+      
+      div.appendChild(icon);
+      div.appendChild(text);
+      readinessFactorsList.appendChild(div);
+    });
+
+    // Counts metrics
+    metricTotalLocators.textContent = health.totalLocators;
+    metricStableLocators.textContent = health.stableLocators;
+    metricFragileLocators.textContent = health.fragileLocators;
+    metricDynamicIds.textContent = health.dynamicIdsFound;
+  }
+
 
   // ─────────────────────────────────────────────────────────────
   // Patch existing message receiver to handle new message types
@@ -1443,24 +2654,207 @@
         renderStabilityResult(message.result);
         break;
 
-      case 'form-scan-result':
-        renderFormTree(message.forms || []);
+      case 'ui-scan-result':
+        uiScanLoader.classList.add('hidden');
+        scanUiBtn.disabled = false;
+        if (treeStabilityTestBtn) treeStabilityTestBtn.disabled = false;
+        if (message.error) {
+          showError('UI Scan Failed', message.error);
+          uiScanResultsContainer.classList.add('hidden');
+        } else {
+          hideError();
+          uiScanResultsContainer.classList.remove('hidden');
+          scannedUiTree = message.result.tree || [];
+          originalReadinessScore = message.result.readinessScore;
+          originalHealthReport = message.result.healthReport;
+          
+          // Reset selections
+          exportNodeSelections = {};
+          
+          // Set default page class name based on Page node name
+          const pageNode = scannedUiTree.find(n => n.type === 'page') || scannedUiTree[0];
+          const rawName = pageNode ? pageNode.name : 'Scanned';
+          const defaultClassName = rawName.replace(/[^a-zA-Z0-9]/g, '') + 'Page';
+          exportClassNameInput.value = defaultClassName;
+
+          renderUiTree(scannedUiTree);
+          renderExportTreeSelector(scannedUiTree);
+          renderAccessibilityIssues(message.result.accessibilityIssues || []);
+          renderReadinessMetrics(message.result.readinessScore, message.result.healthReport);
+          triggerCodeExport(); // Trigger active export representation
+        }
+        break;
+
+      case 'export-result':
+        if (message.error) {
+          exportCodePreview.textContent = '// Export failed: ' + message.error;
+        } else {
+          exportCodePreview.textContent = message.code || '';
+          
+          const format = message.format;
+          exportCodePreview.className = '';
+          if (format === 'json') exportCodePreview.classList.add('language-json');
+          else if (format === 'yaml') exportCodePreview.classList.add('language-yaml');
+          else exportCodePreview.classList.add('language-typescript');
+        }
+        break;
+
+      case 'bulk-stability-result':
+        if (treeStabilityTestBtn) treeStabilityTestBtn.disabled = false;
+        scanUiBtn.disabled = false;
+        
+        renderUiTree(scannedUiTree);
+        
+        if (message.error) {
+          showError('Stability Test Failed', message.error);
+        } else {
+          hideError();
+          const bulkResults = message.results || {};
+          
+          Object.keys(bulkResults).forEach(loc => {
+            const res = bulkResults[loc];
+            const nodes = findNodesByLocator(scannedUiTree, loc);
+            nodes.forEach(node => {
+              node.stabilityScore = res.score;
+              const header = uiTreeContainer.querySelector(`[data-node-id="${node.id}"]`);
+              if (header) {
+                const oldBadge = header.querySelector('.stability-badge');
+                if (oldBadge) oldBadge.remove();
+                
+                const badge = document.createElement('span');
+                badge.className = 'stability-badge ' + (res.score >= 80 ? 'high' : res.score >= 50 ? 'med' : 'low');
+                badge.textContent = `${res.score}% stable`;
+                header.appendChild(badge);
+              }
+            });
+          });
+
+          updateMetricsWithStability(bulkResults);
+        }
+        break;
+
+      case 'simulate-fill-result':
+      case 'simulate-click-result':
+        if (activeSimulationStatus) {
+          if (message.success) {
+            activeSimulationStatus.textContent = '✓ Success';
+            activeSimulationStatus.style.color = 'var(--color-success)';
+          } else {
+            activeSimulationStatus.textContent = '✗ Failed: ' + (message.error || 'unknown');
+            activeSimulationStatus.style.color = 'var(--color-danger)';
+          }
+          setTimeout(() => {
+            if (activeSimulationStatus) activeSimulationStatus.textContent = '';
+          }, 2000);
+        }
         break;
     }
   });
+
+  function findNodesByLocator(tree, locator) {
+    const matches = [];
+    function traverse(node) {
+      if (node.locator === locator) {
+        matches.push(node);
+      }
+      if (node.children) {
+        node.children.forEach(traverse);
+      }
+    }
+    tree.forEach(traverse);
+    return matches;
+  }
+
+  function updateMetricsWithStability(bulkResults) {
+    let totalTested = 0;
+    let stableTested = 0;
+    let fragileTested = 0;
+    
+    Object.keys(bulkResults).forEach(loc => {
+      const res = bulkResults[loc];
+      totalTested++;
+      if (res.score >= 80) {
+        stableTested++;
+      } else {
+        fragileTested++;
+      }
+    });
+
+    if (!originalReadinessScore) return;
+
+    let newScore = originalReadinessScore.score;
+    const newFactors = [...originalReadinessScore.factors];
+
+    const idx = newFactors.findIndex(f => f.text.includes('stability') || f.text.includes('stable'));
+    if (idx !== -1) {
+      newFactors.splice(idx, 1);
+    }
+
+    if (fragileTested > 0) {
+      const penalty = Math.min(30, fragileTested * 5);
+      newScore -= penalty;
+      newFactors.push({
+        text: `${fragileTested} locator(s) failed stability checks with <80% success (-${penalty} pts)`,
+        positive: false
+      });
+    } else if (stableTested > 0) {
+      newScore += 15;
+      newFactors.push({
+        text: `All tested locators passed stability checks (+15 pts)`,
+        positive: true
+      });
+    }
+
+    newScore = Math.max(10, Math.min(100, newScore));
+
+    uiReadinessBadge.textContent = newScore + '% Readiness';
+    readinessScoreText.textContent = newScore + '%';
+    const radial = document.querySelector('.readiness-radial');
+    if (radial) {
+      const color = newScore >= 80 ? 'var(--color-success)' : newScore >= 50 ? 'var(--color-warning)' : 'var(--color-danger)';
+      radial.style.borderColor = color;
+      radial.style.boxShadow = `0 0 12px ${color}33`;
+    }
+
+    readinessFactorsList.innerHTML = '';
+    newFactors.forEach(factor => {
+      const div = document.createElement('div');
+      div.className = 'factor-item ' + (factor.positive ? 'positive' : 'negative');
+      
+      const icon = document.createElement('span');
+      icon.className = 'factor-icon';
+      icon.textContent = factor.positive ? '✓' : '✗';
+      
+      const text = document.createElement('span');
+      text.className = 'factor-text';
+      text.textContent = factor.text;
+      
+      div.appendChild(icon);
+      div.appendChild(text);
+      readinessFactorsList.appendChild(div);
+    });
+
+    if (fragileTested > 0) {
+      const fragileEl = document.getElementById('metric-fragile-locators');
+      if (fragileEl) {
+        const baseFragile = originalHealthReport ? originalHealthReport.fragileLocators : 0;
+        fragileEl.textContent = baseFragile + fragileTested;
+      }
+    }
+  }
 
   // Patch connect-status receiver: show/hide new cards on connect/disconnect
   // We do this by observing the isConnected variable changes indirectly
   // via a MutationObserver on the connection status indicator
   const connectionObserver = new MutationObserver(() => {
     updateStabilityCardVisibility();
-    updateFormScannerVisibility();
+    updateUiScannerVisibility();
   });
   connectionObserver.observe(connectionIndicator, { childList: true, characterData: true, subtree: true, attributes: true });
 
   // Also call on load in case already connected
   updateStabilityCardVisibility();
-  updateFormScannerVisibility();
+  updateUiScannerVisibility();
 
   // Update stability test button enable state when locator changes
   locatorInput.addEventListener('input', () => {
@@ -1469,6 +2863,38 @@
 
   // After evaluation results come in, trigger chain analysis if .or() detected
   // (Chain analysis is triggered inline in the evaluation-result handler)
+
+  function toggleBetaFeatures(enabled) {
+    const stabilityCard = document.getElementById('stability-card');
+    const exportTabBtn = document.querySelector('.ui-tab-btn[data-tab="ui-tab-export"]');
+
+    if (stabilityCard) {
+      if (enabled && isConnected) {
+        stabilityCard.classList.remove('hidden');
+      } else {
+        stabilityCard.classList.add('hidden');
+      }
+    }
+
+    updateUiScannerVisibility();
+
+    if (exportTabBtn) {
+      if (enabled) {
+        exportTabBtn.classList.remove('hidden');
+      } else {
+        exportTabBtn.classList.add('hidden');
+        if (exportTabBtn.classList.contains('active')) {
+          const treeTabBtn = document.querySelector('.ui-tab-btn[data-tab="ui-tab-tree"]');
+          if (treeTabBtn) {
+            treeTabBtn.click();
+          }
+        }
+      }
+    }
+  }
+
+  // Request configuration upon initialization
+  vscode.postMessage({ type: 'get-config' });
 
 })();
 

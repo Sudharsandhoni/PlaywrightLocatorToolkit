@@ -38,6 +38,34 @@ const vm = __importStar(require("vm"));
 const playwright_core_1 = require("playwright-core");
 const playwright_locator_lens_parser_1 = require("playwright-locator-lens-parser");
 const playwright_locator_lens_agent_1 = require("playwright-locator-lens-agent");
+function toCamelCase(str) {
+    const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+    if (parts.length === 0)
+        return '';
+    return parts.map((p, idx) => {
+        const cleaned = p.replace(/[^a-zA-Z0-9]/g, '');
+        if (idx === 0) {
+            return cleaned.toLowerCase();
+        }
+        return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+    }).join('');
+}
+function toPascalCase(str) {
+    const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+    return parts.map(p => {
+        const cleaned = p.replace(/[^a-zA-Z0-9]/g, '');
+        return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+    }).join('');
+}
+function cleanNodeName(name) {
+    let cleaned = name;
+    // Strip trailing common containers
+    cleaned = cleaned.replace(/(Defaults|Default|Section|Form|Card|Panel|Group|Container|Wrapper|Box)$/i, '');
+    // Strip trailing single letter suffix (e.g. Fetus A -> Fetus)
+    cleaned = cleaned.replace(/\s+[A-Z]$/, '');
+    cleaned = cleaned.replace(/([a-z])([A-Z])$/, '$1');
+    return cleaned.trim() || name;
+}
 class LocatorEngine {
     browser = null;
     pages = new Map();
@@ -84,6 +112,40 @@ class LocatorEngine {
             this.browser = null;
         }
         this.pages.clear();
+    }
+    /** Soft disconnect — drops internal state but leaves Chrome running. */
+    softDisconnect() {
+        this.browser = null;
+        this.pages.clear();
+    }
+    /** Re-list all open tabs from the currently connected browser. */
+    async getPages() {
+        if (!this.browser) {
+            throw new Error('Not connected to a browser.');
+        }
+        this.pages.clear();
+        const contexts = this.browser.contexts();
+        const allPages = [];
+        for (const context of contexts) {
+            const contextPages = context.pages();
+            for (let idx = 0; idx < contextPages.length; idx++) {
+                const page = contextPages[idx];
+                const id = `page-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`;
+                this.pages.set(id, page);
+                let title = 'Untitled';
+                try {
+                    title = await page.title();
+                }
+                catch { }
+                let url = 'about:blank';
+                try {
+                    url = page.url();
+                }
+                catch { }
+                allPages.push({ id, title, url });
+            }
+        }
+        return allPages;
     }
     getPage(id) {
         return this.pages.get(id);
@@ -148,8 +210,11 @@ class LocatorEngine {
             let parseErrMsg = err.message;
             if (parseErrMsg.includes('Expected token LPAREN, but got DOT') ||
                 parseErrMsg.includes('Expected token LPAREN')) {
+                // Check if the locator contains '.or.' (dot after or without parens)
                 if (/\.or\s*\./.test(locatorStr) || /\.or\s*$/.test(locatorStr)) {
-                    parseErrMsg = `Syntax Error: ".or" must be called as a method with an argument, e.g.:\n.or(locator('...'))\n\nIncorrect: .or.locator('...')  \u2190  missing parentheses and argument\nCorrect:   .or(locator('...'))  \u2190  pass the alternative locator as argument`;
+                    parseErrMsg = `Syntax Error: ".or" must be called as a method with an argument, e.g.:\n.or(locator('...'))
+
+Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:   .or(locator('...'))  ←  pass the alternative locator as argument`;
                 }
             }
             return {
@@ -285,13 +350,12 @@ class LocatorEngine {
                 return false;
             }
             const type = count === 1 ? 'success' : 'warning';
-            // Get element handles to evaluate them in the main page context (like in Phase 1)
-            const elementHandles = await locatorInstance.elementHandles();
-            await page.evaluate(([elements, hlType, scrollIdx]) => {
+            // Highlight matching elements directly in the page context
+            await locatorInstance.evaluateAll((elems, [hlType, scrollIdx]) => {
                 if (window.__locatorLensAgent) {
-                    window.__locatorLensAgent.highlight(elements, hlType, scrollIdx);
+                    window.__locatorLensAgent.highlight(elems, hlType, scrollIdx);
                 }
-            }, [elementHandles, type, scrollIndex]);
+            }, [type, scrollIndex]);
             return true;
         }
         catch {
@@ -451,6 +515,137 @@ class LocatorEngine {
         return { success: true, runs: runResults, score, locatorStr };
     }
     // ─────────────────────────────────────────────────────────────
+    // Phase 5 — Field Simulation Engine
+    // ─────────────────────────────────────────────────────────────
+    async simulateFill(pageId, locatorStr, value) {
+        const page = this.getPage(pageId);
+        if (!page)
+            return false;
+        try {
+            await this.ensureAgentInjected(page);
+            const sandbox = {
+                page,
+                locator: page.locator.bind(page),
+                getByRole: page.getByRole.bind(page),
+                getByText: page.getByText.bind(page),
+                getByLabel: page.getByLabel.bind(page),
+                getByPlaceholder: page.getByPlaceholder.bind(page),
+                getByAltText: page.getByAltText.bind(page),
+                getByTitle: page.getByTitle.bind(page),
+                getByTestId: page.getByTestId.bind(page),
+            };
+            const context = vm.createContext(sandbox);
+            const locatorInstance = vm.runInContext(locatorStr, context);
+            const handle = await locatorInstance.elementHandle();
+            if (!handle)
+                return false;
+            return await page.evaluate(([el, val]) => {
+                return window.__locatorLensAgent.simulateFill(el, val);
+            }, [handle, value]);
+        }
+        catch (err) {
+            console.error('Failed to simulate fill:', err);
+            return false;
+        }
+    }
+    async simulateClick(pageId, locatorStr, x, y) {
+        const page = this.getPage(pageId);
+        if (!page)
+            return false;
+        try {
+            await this.ensureAgentInjected(page);
+            const sandbox = {
+                page,
+                locator: page.locator.bind(page),
+                getByRole: page.getByRole.bind(page),
+                getByText: page.getByText.bind(page),
+                getByLabel: page.getByLabel.bind(page),
+                getByPlaceholder: page.getByPlaceholder.bind(page),
+                getByAltText: page.getByAltText.bind(page),
+                getByTitle: page.getByTitle.bind(page),
+                getByTestId: page.getByTestId.bind(page),
+            };
+            const context = vm.createContext(sandbox);
+            const locatorInstance = vm.runInContext(locatorStr, context);
+            const handle = await locatorInstance.elementHandle();
+            if (!handle)
+                return false;
+            return await page.evaluate(([el, clickX, clickY]) => {
+                return window.__locatorLensAgent.simulateClick(el, clickX, clickY);
+            }, [handle, x, y]);
+        }
+        catch (err) {
+            console.error('Failed to simulate click:', err);
+            return false;
+        }
+    }
+    // ─────────────────────────────────────────────────────────────
+    // Phase 6 — Bulk Stability Testing
+    // ─────────────────────────────────────────────────────────────
+    async bulkStabilityTest(pageId, locatorStrs, runs = 3) {
+        const page = this.getPage(pageId);
+        if (!page) {
+            throw new Error('Page not found.');
+        }
+        const results = {};
+        const foundCounts = {};
+        locatorStrs.forEach(loc => {
+            results[loc] = [];
+            foundCounts[loc] = 0;
+        });
+        for (let r = 0; r < runs; r++) {
+            try {
+                await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                try {
+                    await this.ensureAgentInjected(page);
+                }
+                catch { /* best effort */ }
+                for (const locatorStr of locatorStrs) {
+                    try {
+                        const sandbox = {
+                            page,
+                            locator: page.locator.bind(page),
+                            getByRole: page.getByRole.bind(page),
+                            getByText: page.getByText.bind(page),
+                            getByLabel: page.getByLabel.bind(page),
+                            getByPlaceholder: page.getByPlaceholder.bind(page),
+                            getByAltText: page.getByAltText.bind(page),
+                            getByTitle: page.getByTitle.bind(page),
+                            getByTestId: page.getByTestId.bind(page),
+                        };
+                        const ctx = vm.createContext(sandbox);
+                        const locatorInstance = vm.runInContext(locatorStr, ctx);
+                        const count = await locatorInstance.count();
+                        const found = count > 0;
+                        if (found) {
+                            foundCounts[locatorStr]++;
+                        }
+                        results[locatorStr].push({ run: r + 1, found, matchCount: count });
+                    }
+                    catch (err) {
+                        results[locatorStr].push({ run: r + 1, found: false, matchCount: 0, error: err.message });
+                    }
+                }
+            }
+            catch (err) {
+                locatorStrs.forEach(locatorStr => {
+                    results[locatorStr].push({ run: r + 1, found: false, matchCount: 0, error: `Reload failed: ${err.message}` });
+                });
+            }
+        }
+        const finalResults = {};
+        locatorStrs.forEach(locatorStr => {
+            const score = Math.round((foundCounts[locatorStr] / runs) * 100);
+            finalResults[locatorStr] = {
+                success: true,
+                runs: results[locatorStr],
+                score,
+                locatorStr
+            };
+        });
+        return finalResults;
+    }
+    // ─────────────────────────────────────────────────────────────
     // Phase 8 — Form-Aware Analysis
     // ─────────────────────────────────────────────────────────────
     async scanForms(pageId) {
@@ -464,90 +659,336 @@ class LocatorEngine {
         });
         return forms;
     }
+    // ─────────────────────────────────────────────────────────────
+    // UI Intelligence Scanner
+    // ─────────────────────────────────────────────────────────────
+    async scanUI(pageId) {
+        const page = this.getPage(pageId);
+        if (!page) {
+            throw new Error('Page not found.');
+        }
+        await this.ensureAgentInjected(page);
+        const scanResult = await page.evaluate(() => {
+            return window.__locatorLensAgent.scanUI();
+        });
+        return scanResult;
+    }
+    generatePOMExport(tree, customClassName, sectionNaming) {
+        const lines = [];
+        lines.push("import { Page, Locator } from '@playwright/test';\n");
+        const pageNode = tree.find(n => n.type === 'page') || tree[0];
+        const rawClassName = customClassName || (pageNode ? pageNode.name : 'ScannedPage');
+        const className = toPascalCase(rawClassName) + (rawClassName.endsWith('Page') ? '' : 'Page');
+        lines.push(`export class ${className} {`);
+        lines.push(`  readonly page: Page;`);
+        const declarations = [];
+        const initializers = [];
+        const seenProperties = new Set();
+        function getUniquePropName(node, parentNode) {
+            let baseName = node.name;
+            if (node.parentSectionName) {
+                const sectionClean = cleanNodeName(node.parentSectionName);
+                if (sectionNaming === 'prefix') {
+                    baseName = sectionClean + ' ' + baseName;
+                }
+                else if (sectionNaming === 'suffix') {
+                    baseName = baseName + ' ' + sectionClean;
+                }
+            }
+            let name = toCamelCase(cleanNodeName(baseName));
+            if (!name)
+                name = 'element';
+            if (seenProperties.has(name) && parentNode?.name) {
+                const parentClean = toPascalCase(cleanNodeName(parentNode.name));
+                name = toCamelCase(parentClean + toPascalCase(name));
+            }
+            let finalName = name;
+            let counter = 2;
+            while (seenProperties.has(finalName)) {
+                finalName = `${name}${counter}`;
+                counter++;
+            }
+            seenProperties.add(finalName);
+            return finalName;
+        }
+        function traverse(node, parentVar = 'page', parentNode) {
+            const type = node.type;
+            if (type === 'section' || type === 'subsection' || type === 'dialog' || type === 'table' || type === 'grid') {
+                const varName = getUniquePropName(node, parentNode);
+                declarations.push(`  readonly ${varName}: Locator;`);
+                initializers.push(`    this.${varName} = ${parentVar}.${node.locator};`);
+                node.children.forEach(c => traverse(c, `this.${varName}`, node));
+                return;
+            }
+            else if (type === 'field' || type === 'image' || type === 'svg' || type === 'canvas' || type === 'rte') {
+                const varName = getUniquePropName(node, parentNode);
+                declarations.push(`  readonly ${varName}: Locator;`);
+                initializers.push(`    this.${varName} = ${parentVar}.${node.locator};`);
+            }
+            node.children.forEach(c => traverse(c, parentVar, parentNode));
+        }
+        tree.forEach(n => traverse(n));
+        lines.push(declarations.join('\n'));
+        lines.push('\n  constructor(page: Page) {');
+        lines.push('    this.page = page;');
+        lines.push(initializers.join('\n'));
+        lines.push('  }');
+        lines.push('}');
+        return lines.join('\n');
+    }
+    generateSDKExport(tree) {
+        const code = `import { Page, Locator } from '@playwright/test';
+
+export class UIAutomationSDK {
+  constructor(public readonly page: Page) {}
+
+  /**
+   * Scoped section finder
+   */
+  getSection(name: string): Locator {
+    return this.page.locator('fieldset, section, [role="region"], [role="group"], .card, .panel')
+      .filter({ has: this.page.locator('legend, h1, h2, h3, h4, h5, h6, [aria-label]').filter({ hasText: name }) })
+      .first();
+  }
+
+  /**
+   * Generic API to interact with any field by its section and label
+   */
+  async fillField(options: { section?: string; label: string; value: string }) {
+    let scope = options.section ? this.getSection(options.section) : this.page;
+    const field = scope.getByLabel(options.label)
+      .or(scope.getByPlaceholder(options.label))
+      .or(scope.getByRole('textbox', { name: options.label }))
+      .or(scope.locator('input, textarea, select').filter({ hasText: options.label }));
+    await field.first().fill(options.value);
+  }
+
+  /**
+   * Generic API to click a button in a section
+   */
+  async clickButton(options: { section?: string; label: string }) {
+    let scope = options.section ? this.getSection(options.section) : this.page;
+    const btn = scope.getByRole('button', { name: options.label })
+      .or(scope.getByText(options.label))
+      .or(scope.locator('button, a, [role="button"]').filter({ hasText: options.label }));
+    await btn.first().click();
+  }
+
+  /**
+   * Generic API to read table cells
+   */
+  async getTableCell(options: { tableSection: string; rowIndex: number; columnName: string }): Promise<string> {
+    const tableScope = this.getSection(options.tableSection);
+    const headers = await tableScope.locator('th, [role="columnheader"]').allTextContents();
+    const colIndex = headers.indexOf(options.columnName);
+    if (colIndex === -1) {
+      throw new Error(\`Column "\${options.columnName}" not found in table "\${options.tableSection}". Available columns: \${headers.join(', ')}\`);
+    }
+    const cell = tableScope.locator('tr, [role="row"]').nth(options.rowIndex + 1).locator('td, [role="gridcell"]').nth(colIndex);
+    return (await cell.innerText()).trim();
+  }
+}
+`;
+        return code;
+    }
+    generateTSInterfacesExport(tree, sectionNaming) {
+        const lines = [];
+        const seenInterfaces = new Set();
+        function getFieldName(f) {
+            let baseName = f.name;
+            if (f.parentSectionName) {
+                const sectionClean = cleanNodeName(f.parentSectionName);
+                if (sectionNaming === 'prefix') {
+                    baseName = sectionClean + ' ' + baseName;
+                }
+                else if (sectionNaming === 'suffix') {
+                    baseName = baseName + ' ' + sectionClean;
+                }
+            }
+            return toCamelCase(cleanNodeName(baseName));
+        }
+        function traverse(node) {
+            const fields = node.children.filter(c => c.type === 'field');
+            if (fields.length > 0) {
+                const cleanName = toPascalCase(cleanNodeName(node.name));
+                let interfaceName = cleanName + 'Data';
+                let finalName = interfaceName;
+                let counter = 2;
+                while (seenInterfaces.has(finalName)) {
+                    finalName = `${cleanName}${counter}Data`;
+                    counter++;
+                }
+                seenInterfaces.add(finalName);
+                lines.push(`export interface ${finalName} {`);
+                fields.forEach(f => {
+                    const cleanFieldName = getFieldName(f);
+                    if (cleanFieldName) {
+                        lines.push(`  ${cleanFieldName}?: string;`);
+                    }
+                });
+                lines.push('}\n');
+            }
+            node.children.forEach(c => {
+                if (c.type !== 'field') {
+                    traverse(c);
+                }
+            });
+        }
+        tree.forEach(n => traverse(n));
+        if (lines.length === 0) {
+            lines.push('export interface PageData {\n  [key: string]: any;\n}');
+        }
+        return lines.join('\n');
+    }
+    generateJSONSchemaExport(tree) {
+        const schema = {
+            $schema: 'http://json-schema.org/draft-07/schema#',
+            type: 'object',
+            properties: {},
+            required: []
+        };
+        function traverse(node, currentProps) {
+            if (node.type === 'section' || node.type === 'subsection' || node.type === 'dialog') {
+                const sectionProps = {
+                    type: 'object',
+                    properties: {},
+                    required: []
+                };
+                const fields = node.children.filter(c => c.type === 'field');
+                fields.forEach(f => {
+                    sectionProps.properties[f.name] = {
+                        type: 'string',
+                        description: `Field: ${f.name}, Locator: ${f.locator}`
+                    };
+                    if (f.meta?.required) {
+                        sectionProps.required.push(f.name);
+                    }
+                });
+                if (fields.length > 0) {
+                    currentProps[node.name] = sectionProps;
+                }
+                node.children.forEach(c => traverse(c, sectionProps.properties));
+            }
+            else {
+                node.children.forEach(c => traverse(c, currentProps));
+            }
+        }
+        tree.forEach(n => traverse(n, schema.properties));
+        if (Object.keys(schema.properties).length === 0) {
+            schema.properties.fields = {
+                type: 'object',
+                additionalProperties: { type: 'string' }
+            };
+        }
+        return JSON.stringify(schema, null, 2);
+    }
+    generateYAMLExport(tree) {
+        const lines = [];
+        function traverse(node, indent = 0) {
+            const pad = ' '.repeat(indent);
+            lines.push(`${pad}- name: "${node.name.replace(/"/g, '\\"')}"`);
+            lines.push(`${pad}  type: "${node.type}"`);
+            lines.push(`${pad}  locator: "${node.locator.replace(/"/g, '\\"')}"`);
+            if (node.children.length > 0) {
+                lines.push(`${pad}  children:`);
+                node.children.forEach(c => traverse(c, indent + 4));
+            }
+        }
+        lines.push('page_structure:');
+        tree.forEach(n => traverse(n, 2));
+        return lines.join('\n');
+    }
     calculateConfidence(locatorStr, count, el, steps) {
-        let score = 0;
         const factors = [];
-        // 1. Match Count
-        if (count === 1) {
-            score += 40;
-            factors.push({ text: 'Single unique match', positive: true });
-        }
-        else {
-            score -= 20;
-            factors.push({ text: `Multiple matches found (${count})`, positive: false });
-        }
-        // 2. Visibility
-        if (el?.visible) {
-            score += 15;
-            factors.push({ text: 'Element is visible on screen', positive: true });
-        }
-        else if (el) {
-            score -= 10;
-            factors.push({ text: 'Element is hidden/invisible', positive: false });
-        }
-        // 3. Locator API Semantic Quality
+        // ── Step 1: Tier base score (matches browser-agent generateAlternatives tiers) ──
+        let score = 50; // default for unknown patterns
         if (locatorStr.includes('getByTestId')) {
-            score += 25;
-            factors.push({ text: 'Uses semantic data-testid locator', positive: true });
-        }
-        else if (locatorStr.includes('getByRole') && locatorStr.includes('name:')) {
-            score += 20;
-            factors.push({ text: 'Uses getByRole with accessible name filter', positive: true });
+            score = 98;
+            factors.push({ text: 'Uses stable data-testid locator', positive: true });
         }
         else if (locatorStr.includes('getByLabel')) {
-            score += 20;
+            score = 95;
             factors.push({ text: 'Uses getByLabel standard form query', positive: true });
         }
-        else if (locatorStr.includes('getByPlaceholder') || locatorStr.includes('getByTitle') || locatorStr.includes('getByAltText')) {
-            score += 15;
-            factors.push({ text: 'Uses accessible placeholder/title/alt text', positive: true });
+        else if (locatorStr.includes('getByRole') && (locatorStr.includes('name:') || locatorStr.includes('name :'))) {
+            score = 92;
+            factors.push({ text: 'Uses getByRole with accessible name filter', positive: true });
+        }
+        else if (locatorStr.includes('getByPlaceholder') || locatorStr.includes('getByAltText') || locatorStr.includes('getByTitle')) {
+            score = 85;
+            factors.push({ text: 'Uses accessible attribute locator', positive: true });
         }
         else if (locatorStr.includes('getByText')) {
-            score += 12;
-            factors.push({ text: 'Uses getByText search', positive: true });
+            score = 80;
+            factors.push({ text: 'Uses getByText content match', positive: true });
+        }
+        else if (locatorStr.includes('getByRole')) {
+            score = 75;
+            factors.push({ text: 'Uses getByRole without name filter', positive: true });
         }
         else if (locatorStr.includes('locator(')) {
-            // Check if it is a CSS ID or CSS selector or XPath
             const cssMatch = locatorStr.match(/locator\(\s*['"`](.*?)['"`]\s*\)/);
             if (cssMatch) {
                 const selector = cssMatch[1];
                 if (selector.startsWith('#') && !selector.includes(' ') && !selector.includes('>')) {
-                    score += 15;
+                    score = 85;
                     factors.push({ text: 'Uses CSS ID locator', positive: true });
                 }
                 else if (selector.startsWith('//') || selector.startsWith('xpath=')) {
-                    score -= 15;
+                    score = 40;
                     factors.push({ text: 'Uses XPath locator (fragile to structure)', positive: false });
                 }
                 else {
-                    score += 5;
+                    score = 55;
                     factors.push({ text: 'Uses CSS path selector', positive: false });
                 }
             }
         }
-        // 4. Stability Check (Dynamic ID penalty)
+        // ── Step 2: Evaluation adjustments (±) ──
+        // Match uniqueness: being unique is ideal; multiple matches = worse
+        if (count === 1) {
+            factors.push({ text: 'Single unique match', positive: true });
+            // No penalty/bonus — uniqueness is expected at this tier
+        }
+        else if (count > 1) {
+            score = Math.max(0, score - 15);
+            factors.push({ text: `Multiple matches found (${count}) — not unique`, positive: false });
+        }
+        else {
+            // count === 0 shouldn't reach here, but guard anyway
+            score = 0;
+            factors.push({ text: 'No matching elements found', positive: false });
+        }
+        // Visibility
+        if (el?.visible) {
+            factors.push({ text: 'Element is visible on screen', positive: true });
+        }
+        else if (el) {
+            score = Math.max(0, score - 8);
+            factors.push({ text: 'Element is hidden/invisible', positive: false });
+        }
+        // Dynamic/generated ID penalty (only if locator actually uses the ID)
         if (el?.id) {
             const isDynamic = /(mui|ag-|grid-|ng-|val-|id-|ember|k-|dx-)/i.test(el.id) ||
                 /^[0-9]+$/.test(el.id) ||
                 /[0-9]{4,}/.test(el.id);
             if (isDynamic && locatorStr.includes(`#${el.id}`)) {
-                score -= 25;
+                score = Math.max(0, score - 20);
                 factors.push({ text: 'Uses generated/dynamic element ID', positive: false });
             }
         }
-        // 5. Index-based fragilities (nth, first, last, nth-child)
+        // Index-based fragility
         if (/\.(nth|first|last)\(/.test(locatorStr) || locatorStr.includes(':nth-child') || locatorStr.includes(':nth-of-type')) {
-            score -= 15;
+            score = Math.max(0, score - 12);
             factors.push({ text: 'Uses index filters (fragile to page list changes)', positive: false });
         }
-        // 6. Fragile / Excessively long text/CSS patterns check
+        // Excessively long or CSS-polluted text patterns
         const fragileCheck = this.hasFragileNameFilter(steps);
         if (fragileCheck.fragile) {
-            score -= 60;
+            score = Math.max(0, score - 40);
             factors.push({ text: fragileCheck.reason, positive: false });
         }
-        // Normalize final score to [0, 100]
-        const confidence = Math.max(0, Math.min(100, score));
+        const confidence = Math.max(0, Math.min(100, Math.round(score)));
         return { confidence, factors };
     }
     hasFragileNameFilter(steps) {
@@ -687,20 +1128,20 @@ class LocatorEngine {
         }
         // 2. Perform deep analysis on the failed step
         const suggestions = [];
-        let message = 'Locator execution broke at step: ' + steps[failedStepIndex]?.name;
+        let message = failedStepIndex !== -1
+            ? 'Locator execution broke at step: ' + steps[failedStepIndex]?.name
+            : 'Locator returned 0 elements.';
         if (failedStepIndex !== -1 && lastValidLocator) {
             const failedStep = steps[failedStepIndex];
-            // A. If the failed step was a role selector (getByRole)
+            // A. getByRole — check if role exists but name mismatches
             if (failedStep.name === 'getByRole') {
                 const expectedRole = failedStep.args[0];
                 const options = failedStep.args[1] || {};
                 const expectedName = options.name;
-                // Query the container (last valid locator) to list role/names of children
                 try {
                     const handles = await lastValidLocator.elementHandles();
                     const foundElementsInfo = [];
                     for (const handle of handles) {
-                        // Find all child elements matching standard tags or roles
                         const childInfo = await handle.evaluate((el) => {
                             const children = Array.from(el.querySelectorAll('*'));
                             return children.map(child => {
@@ -711,11 +1152,9 @@ class LocatorEngine {
                         });
                         foundElementsInfo.push(...childInfo);
                     }
-                    // Check if expected role exists in children
                     const sameRoleElements = foundElementsInfo.filter(c => c.role === expectedRole);
                     if (sameRoleElements.length > 0) {
                         message = `Role "${expectedRole}" exists, but accessible name did not match.`;
-                        // Suggest correct names
                         sameRoleElements.forEach(item => {
                             if (item.accessibleName) {
                                 suggestions.push({
@@ -724,7 +1163,6 @@ class LocatorEngine {
                                     confidence: 90,
                                     reason: `Matches role "${expectedRole}" with actual name "${item.accessibleName}".`
                                 });
-                                // If expectedName is partial, suggest RegExp
                                 if (expectedName && typeof expectedName === 'string') {
                                     const cleanedExpected = expectedName.trim().toLowerCase();
                                     const cleanedActual = item.accessibleName.trim().toLowerCase();
@@ -742,7 +1180,6 @@ class LocatorEngine {
                     }
                     else {
                         message = `No elements with role "${expectedRole}" exist inside the container.`;
-                        // Suggest whatever children exist inside container
                         foundElementsInfo.slice(0, 5).forEach(item => {
                             suggestions.push({
                                 selector: `${currentLocatorStr}.getByRole('${item.role}', { name: '${item.accessibleName}' })`,
@@ -752,12 +1189,11 @@ class LocatorEngine {
                             });
                         });
                     }
-                    // Attach details to the failed step
                     analysisSteps[analysisSteps.length - 1].foundElementsInfo = foundElementsInfo;
                 }
                 catch { }
             }
-            // B. If the failed step was getByLabel or getByPlaceholder
+            // B. getByLabel / getByPlaceholder / getByText — text mismatch analysis
             if (failedStep.name === 'getByLabel' || failedStep.name === 'getByPlaceholder' || failedStep.name === 'getByText') {
                 const expectedText = failedStep.args[0];
                 try {
@@ -792,27 +1228,151 @@ class LocatorEngine {
                             if (lbl.toLowerCase().includes(query)) {
                                 suggestions.push({
                                     selector: `${currentLocatorStr}.${failedStep.name}(/${expectedText}/i)`,
-                                    type: 'locator', // fallback type
+                                    type: 'locator',
                                     confidence: 85,
                                     reason: `Regex partial match suggestion for "${lbl}".`
                                 });
                             }
                         });
-                        message = `Text/Label mismatch. Expected label like "${expectedText}" but found: [${labelsFound.slice(0, 3).join(', ')}]`;
+                        message = `Text/Label mismatch. Expected "${expectedText}" but found: [${labelsFound.slice(0, 3).join(', ')}]`;
+                    }
+                }
+                catch { }
+            }
+            // C. getByTestId — look for nearby test ID attributes in container
+            if (failedStep.name === 'getByTestId') {
+                const expectedId = String(failedStep.args[0] || '');
+                try {
+                    const handles = await lastValidLocator.elementHandles();
+                    const foundTestIds = [];
+                    for (const handle of handles) {
+                        const ids = await handle.evaluate((el) => {
+                            const testIdAttrs = ['data-testid', 'data-test-id', 'data-test', 'data-cy', 'data-qa'];
+                            const all = Array.from(el.querySelectorAll('*'));
+                            const result = [];
+                            all.forEach(child => {
+                                testIdAttrs.forEach(attr => {
+                                    const val = child.getAttribute(attr);
+                                    if (val)
+                                        result.push(val);
+                                });
+                            });
+                            return result;
+                        });
+                        foundTestIds.push(...ids);
+                    }
+                    const uniqueIds = [...new Set(foundTestIds)];
+                    if (uniqueIds.length > 0) {
+                        const closeMatches = uniqueIds.filter(id => id.toLowerCase().includes(expectedId.toLowerCase()) ||
+                            expectedId.toLowerCase().includes(id.toLowerCase()));
+                        const candidates = closeMatches.length > 0 ? closeMatches : uniqueIds.slice(0, 5);
+                        message = closeMatches.length > 0
+                            ? `Test ID "${expectedId}" not found — close matches exist in container.`
+                            : `Test ID "${expectedId}" not found. Available test IDs in container: [${uniqueIds.slice(0, 3).join(', ')}]`;
+                        candidates.forEach(id => {
+                            suggestions.push({
+                                selector: `${currentLocatorStr}.getByTestId('${id}')`,
+                                type: 'getByTestId',
+                                confidence: closeMatches.includes(id) ? 88 : 70,
+                                reason: `Test ID "${id}" found in container.`
+                            });
+                        });
+                    }
+                    else {
+                        message = `No elements with test ID attributes found inside the container.`;
+                    }
+                    analysisSteps[analysisSteps.length - 1].foundElementsInfo =
+                        uniqueIds.map(id => ({ role: 'testid', accessibleName: id }));
+                }
+                catch { }
+            }
+            // D. getByAltText — look for elements with alt attributes in container
+            if (failedStep.name === 'getByAltText') {
+                const expectedAlt = String(failedStep.args[0] || '');
+                try {
+                    const handles = await lastValidLocator.elementHandles();
+                    const foundAlts = [];
+                    for (const handle of handles) {
+                        const alts = await handle.evaluate((el) => {
+                            const all = Array.from(el.querySelectorAll('[alt]'));
+                            return all.map(child => child.getAttribute('alt') || '').filter(Boolean);
+                        });
+                        foundAlts.push(...alts);
+                    }
+                    const uniqueAlts = [...new Set(foundAlts)];
+                    if (uniqueAlts.length > 0) {
+                        message = `Alt text "${expectedAlt}" not found. Available alt texts: [${uniqueAlts.slice(0, 3).join(', ')}]`;
+                        const closeAlts = uniqueAlts.filter(a => a.toLowerCase().includes(expectedAlt.toLowerCase()) ||
+                            expectedAlt.toLowerCase().includes(a.toLowerCase()));
+                        (closeAlts.length > 0 ? closeAlts : uniqueAlts.slice(0, 3)).forEach(alt => {
+                            suggestions.push({
+                                selector: `${currentLocatorStr}.getByAltText('${alt}')`,
+                                type: 'getByAltText',
+                                confidence: closeAlts.includes(alt) ? 88 : 70,
+                                reason: `Image with alt text "${alt}" found in container.`
+                            });
+                            suggestions.push({
+                                selector: `${currentLocatorStr}.getByAltText(/${alt}/i)`,
+                                type: 'getByAltText',
+                                confidence: closeAlts.includes(alt) ? 85 : 65,
+                                reason: `Case-insensitive partial match for alt text "${alt}".`
+                            });
+                        });
+                    }
+                    else {
+                        message = `No elements with alt attributes found inside the container.`;
+                    }
+                }
+                catch { }
+            }
+            // E. getByTitle — look for elements with title attributes in container
+            if (failedStep.name === 'getByTitle') {
+                const expectedTitle = String(failedStep.args[0] || '');
+                try {
+                    const handles = await lastValidLocator.elementHandles();
+                    const foundTitles = [];
+                    for (const handle of handles) {
+                        const titles = await handle.evaluate((el) => {
+                            const all = Array.from(el.querySelectorAll('[title]'));
+                            return all.map(child => child.getAttribute('title') || '').filter(Boolean);
+                        });
+                        foundTitles.push(...titles);
+                    }
+                    const uniqueTitles = [...new Set(foundTitles)];
+                    if (uniqueTitles.length > 0) {
+                        message = `Title "${expectedTitle}" not found. Available titles: [${uniqueTitles.slice(0, 3).join(', ')}]`;
+                        const closeTitles = uniqueTitles.filter(t => t.toLowerCase().includes(expectedTitle.toLowerCase()) ||
+                            expectedTitle.toLowerCase().includes(t.toLowerCase()));
+                        (closeTitles.length > 0 ? closeTitles : uniqueTitles.slice(0, 3)).forEach(title => {
+                            suggestions.push({
+                                selector: `${currentLocatorStr}.getByTitle('${title}')`,
+                                type: 'getByTitle',
+                                confidence: closeTitles.includes(title) ? 88 : 70,
+                                reason: `Element with title "${title}" found in container.`
+                            });
+                            suggestions.push({
+                                selector: `${currentLocatorStr}.getByTitle(/${title}/i)`,
+                                type: 'getByTitle',
+                                confidence: closeTitles.includes(title) ? 82 : 62,
+                                reason: `Case-insensitive partial match for title "${title}".`
+                            });
+                        });
+                    }
+                    else {
+                        message = `No elements with title attributes found inside the container.`;
                     }
                 }
                 catch { }
             }
         }
         else {
-            // If the first step failed, search page-wide for elements matching the first step
-            message = `Root locator step failed: ${steps[0]?.name}`;
+            // Root-step failure: search page-wide for matching elements
+            const rootStep = steps[0];
+            message = `Root locator step failed: ${rootStep?.name}`;
             try {
-                const selector = steps[0].args[0];
-                if (steps[0].name === 'locator' && typeof selector === 'string') {
-                    // Check if user made a typo (e.g. forgot class dot or id hash)
+                if (rootStep?.name === 'locator' && typeof rootStep.args[0] === 'string') {
+                    const selector = rootStep.args[0];
                     const allTextMatches = await page.evaluate((s) => {
-                        // Find elements containing this text
                         const results = [];
                         const tags = Array.from(document.querySelectorAll('*'));
                         for (const t of tags) {
@@ -823,7 +1383,7 @@ class LocatorEngine {
                         }
                         return results.map(r => window.__locatorLensAgent.generateAlternatives(r)[0]).filter(Boolean);
                     }, selector);
-                    allTextMatches.slice(0, 3).forEach(alt => {
+                    allTextMatches.slice(0, 3).forEach((alt) => {
                         suggestions.push({
                             selector: alt.selector,
                             type: alt.type,
@@ -831,6 +1391,123 @@ class LocatorEngine {
                             reason: `Found element matching "${selector}" as an ID/class directly.`
                         });
                     });
+                }
+                else if (rootStep?.name === 'getByTestId') {
+                    // Page-wide test ID search
+                    const expectedId = String(rootStep.args[0] || '');
+                    const allIds = await page.evaluate(() => {
+                        const testIdAttrs = ['data-testid', 'data-test-id', 'data-test', 'data-cy', 'data-qa'];
+                        const found = [];
+                        document.querySelectorAll('*').forEach(el => {
+                            testIdAttrs.forEach(attr => {
+                                const val = el.getAttribute(attr);
+                                if (val)
+                                    found.push(val);
+                            });
+                        });
+                        return [...new Set(found)];
+                    });
+                    if (allIds.length > 0) {
+                        message = `Test ID "${expectedId}" not found on page. Available test IDs: [${allIds.slice(0, 5).join(', ')}]`;
+                        const close = allIds.filter((id) => id.toLowerCase().includes(expectedId.toLowerCase()));
+                        (close.length > 0 ? close : allIds).slice(0, 3).forEach((id) => {
+                            suggestions.push({
+                                selector: `getByTestId('${id}')`,
+                                type: 'getByTestId',
+                                confidence: close.includes(id) ? 85 : 60,
+                                reason: `Test ID "${id}" found on page.`
+                            });
+                        });
+                    }
+                    else {
+                        message = `No test ID attributes found anywhere on the page.`;
+                    }
+                }
+                else if (rootStep?.name === 'getByAltText') {
+                    const expectedAlt = String(rootStep.args[0] || '');
+                    const allAlts = await page.evaluate(() => {
+                        const found = [];
+                        document.querySelectorAll('[alt]').forEach(el => {
+                            const val = el.getAttribute('alt');
+                            if (val)
+                                found.push(val);
+                        });
+                        return [...new Set(found)];
+                    });
+                    if (allAlts.length > 0) {
+                        message = `Alt text "${expectedAlt}" not found on page. Available: [${allAlts.slice(0, 3).join(', ')}]`;
+                        const close = allAlts.filter((a) => a.toLowerCase().includes(expectedAlt.toLowerCase()));
+                        (close.length > 0 ? close : allAlts).slice(0, 3).forEach((alt) => {
+                            suggestions.push({
+                                selector: `getByAltText('${alt}')`,
+                                type: 'getByAltText',
+                                confidence: close.includes(alt) ? 85 : 60,
+                                reason: `Image with alt text "${alt}" found on page.`
+                            });
+                        });
+                    }
+                    else {
+                        message = `No elements with alt attributes found on the page.`;
+                    }
+                }
+                else if (rootStep?.name === 'getByTitle') {
+                    const expectedTitle = String(rootStep.args[0] || '');
+                    const allTitles = await page.evaluate(() => {
+                        const found = [];
+                        document.querySelectorAll('[title]').forEach(el => {
+                            const val = el.getAttribute('title');
+                            if (val)
+                                found.push(val);
+                        });
+                        return [...new Set(found)];
+                    });
+                    if (allTitles.length > 0) {
+                        message = `Title "${expectedTitle}" not found on page. Available: [${allTitles.slice(0, 3).join(', ')}]`;
+                        const close = allTitles.filter((t) => t.toLowerCase().includes(expectedTitle.toLowerCase()));
+                        (close.length > 0 ? close : allTitles).slice(0, 3).forEach((title) => {
+                            suggestions.push({
+                                selector: `getByTitle('${title}')`,
+                                type: 'getByTitle',
+                                confidence: close.includes(title) ? 85 : 60,
+                                reason: `Element with title "${title}" found on page.`
+                            });
+                        });
+                    }
+                    else {
+                        message = `No elements with title attributes found on the page.`;
+                    }
+                }
+                else if (rootStep?.name === 'getByRole') {
+                    // Page-wide role search
+                    const expectedRole = String(rootStep.args[0] || '');
+                    const options = rootStep.args[1] || {};
+                    const allRoleElements = await page.evaluate((role) => {
+                        const all = Array.from(document.querySelectorAll('*'));
+                        const results = [];
+                        all.forEach(el => {
+                            const info = window.__locatorLensAgent.getElementInfo(el);
+                            if (info?.role === role) {
+                                results.push({ role: info.role, accessibleName: info.accessibleName });
+                            }
+                        });
+                        return results.slice(0, 5);
+                    }, expectedRole);
+                    if (allRoleElements.length > 0) {
+                        message = `No elements with role "${expectedRole}" found — but similar elements exist.`;
+                        allRoleElements.forEach((item) => {
+                            if (item.accessibleName) {
+                                suggestions.push({
+                                    selector: `getByRole('${item.role}', { name: '${item.accessibleName}' })`,
+                                    type: 'getByRole',
+                                    confidence: 80,
+                                    reason: `Element with role "${item.role}" and name "${item.accessibleName}" found on page.`
+                                });
+                            }
+                        });
+                    }
+                    else {
+                        message = `No elements with role "${expectedRole}" found on the page at all.`;
+                    }
                 }
             }
             catch { }
