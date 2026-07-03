@@ -39,11 +39,14 @@
         "playwright-locator-lens.browserPath": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "description": "Optional: Custom path to Google Chrome/Chromium executable. If empty, the extension will attempt to auto-detect Google Chrome."
         },
         "playwright-locator-lens.debuggingPort": {
           "type": "integer",
           "default": 9222,
+          "minimum": 1024,
+          "maximum": 65535,
           "description": "The port to use for Chrome remote debugging."
         },
         "playwright-locator-lens.enableBetaFeatures": {

@@ -72,8 +72,8 @@ flowchart TD
         C -->|Injects| E[Browser Agent Script]
     end
 
-    subgraph Sandbox Evaluation
-        C -->|vm.runInContext| F[Evaluate Locator String]
+    subgraph Safe Programmatic Evaluation
+        C -->|Programmatic Locator Interpreter| F[Evaluate Locator String]
         F -->|Count / Highlight| D
         E -->|Scan Accessibility & DOM| C
     end
@@ -87,11 +87,11 @@ flowchart TD
 ### 1. Extension (`packages/extension`)
 Acts as the bridge between VS Code and the browser.
 * Spawns Chrome with flags: `--remote-debugging-port=9222`, `--user-data-dir=.vscode/playwright-locator-profile/`.
-* Manages the Sidebar Webview panel (`index.html` + `main.js`), rendering query boxes, match highlights, details, and beta toggles.
+* Manages the Sidebar Webview panel (`index.html` + `main.js`), rendering query boxes, match highlights, details, copy controls, and beta toggles.
 
 ### 2. Engine (`packages/engine`)
 Handles execution safety and diagnostics.
-* Creates a sandboxed Node **`vm` context** binding local Playwright functions (`getByRole`, `locator`) to evaluate user expressions against the active Chrome tab.
+* Safely parses and programmatically evaluates locator expressions step-by-step using a secure method whitelist (e.g. `getByRole`, `locator`, `filter`), completely eliminating `eval` or Node `vm.runInContext` sandbox escape exploits.
 * Conducts **Failure Diagnostics** by splitting query paths into steps, evaluating them incrementally, and identifying the precise node where a query yields zero elements.
 
 ### 3. Parser (`packages/locator-parser`)
@@ -134,3 +134,11 @@ Configure settings inside VS Code (`settings.json`):
    - Open the workspace in VS Code.
    - Press `F5` to open the **Extension Development Host**.
    - Open the sidebar panel to launch Chrome and start writing locators!
+
+---
+
+## 🎬 Demonstration Video
+
+Below is a recording showing Playwright locators highlighting matching elements and executing actions on a sample authentication web page:
+
+![Playwright Locator Lens Action Demo](locator_lens_demo.webp)

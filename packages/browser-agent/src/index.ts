@@ -1,10 +1,6 @@
 export const AGENT_SCRIPT = `
 (function() {
-  if (window.__locatorLensAgent) {
-    try {
-      window.__locatorLensAgent.clear();
-    } catch (e) {}
-  }
+  if (window.__locatorLensAgent) return;
 
   const styleId = '__locator_lens_styles';
   if (!document.getElementById(styleId)) {
@@ -1156,9 +1152,7 @@ export const AGENT_SCRIPT = `
 
         // 1. Missing Label
         const label = getAccessibleName(el);
-        const skipTags = ['a', 'button'];
-        const skipRoles = ['button', 'link'];
-        if (!label && !skipTags.includes(tagName) && !skipRoles.includes(role)) {
+        if (!label) {
           accessibilityIssues.push({
             elementId: el.id || undefined,
             tagName,

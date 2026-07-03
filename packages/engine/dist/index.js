@@ -1,45 +1,61 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocatorEngine = void 0;
-const vm = __importStar(require("vm"));
 const playwright_core_1 = require("playwright-core");
 const playwright_locator_lens_parser_1 = require("playwright-locator-lens-parser");
 const playwright_locator_lens_agent_1 = require("playwright-locator-lens-agent");
+const ALLOWED_LOCATOR_METHODS = new Set([
+    'locator',
+    'getByRole',
+    'getByText',
+    'getByLabel',
+    'getByPlaceholder',
+    'getByAltText',
+    'getByTitle',
+    'getByTestId',
+    'first',
+    'last',
+    'nth',
+    'filter',
+    'or',
+    'and'
+]);
+function resolveArg(arg, page) {
+    if (arg && typeof arg === 'object') {
+        if (arg.type === 'nested_locator') {
+            return constructLocator(page, arg.steps);
+        }
+        if (arg.source !== undefined && arg.flags !== undefined) {
+            return new RegExp(arg.source, arg.flags);
+        }
+        if (arg instanceof RegExp) {
+            return arg;
+        }
+        const resolvedObj = {};
+        for (const [k, v] of Object.entries(arg)) {
+            resolvedObj[k] = resolveArg(v, page);
+        }
+        return resolvedObj;
+    }
+    return arg;
+}
+function constructLocator(page, steps) {
+    let current = page;
+    for (const step of steps) {
+        if (!ALLOWED_LOCATOR_METHODS.has(step.name)) {
+            throw new Error(`Forbidden or unsupported locator method: ${step.name}`);
+        }
+        const method = current[step.name];
+        if (typeof method !== 'function') {
+            throw new Error(`Method ${step.name} is not available on current locator target.`);
+        }
+        const resolvedArgs = step.args.map(arg => resolveArg(arg, page));
+        current = method.apply(current, resolvedArgs);
+    }
+    return current;
+}
 function toCamelCase(str) {
-    const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+    const parts = str.split(/[^a-zA-Z0-9]+|(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).filter(Boolean);
     if (parts.length === 0)
         return '';
     return parts.map((p, idx) => {
@@ -51,7 +67,9 @@ function toCamelCase(str) {
     }).join('');
 }
 function toPascalCase(str) {
-    const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+    const parts = str.split(/[^a-zA-Z0-9]+|(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).filter(Boolean);
+    if (parts.length === 0)
+        return '';
     return parts.map(p => {
         const cleaned = p.replace(/[^a-zA-Z0-9]/g, '');
         return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
@@ -152,7 +170,10 @@ class LocatorEngine {
     }
     async ensureAgentInjected(page) {
         try {
-            await page.evaluate(playwright_locator_lens_agent_1.AGENT_SCRIPT);
+            const isInjected = await page.evaluate(() => typeof window.__locatorLensAgent !== 'undefined');
+            if (!isInjected) {
+                await page.evaluate(playwright_locator_lens_agent_1.AGENT_SCRIPT);
+            }
         }
         catch (err) {
             throw new Error(`Failed to inject locator lens browser agent: ${err.message}`);
@@ -227,22 +248,12 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
                 alternatives: []
             };
         }
-        // Bind locator utility functions inside a VM sandbox
-        const sandbox = {
-            page,
-            locator: page.locator.bind(page),
-            getByRole: page.getByRole.bind(page),
-            getByText: page.getByText.bind(page),
-            getByLabel: page.getByLabel.bind(page),
-            getByPlaceholder: page.getByPlaceholder.bind(page),
-            getByAltText: page.getByAltText.bind(page),
-            getByTitle: page.getByTitle.bind(page),
-            getByTestId: page.getByTestId.bind(page),
-        };
         let locatorInstance;
         try {
-            const context = vm.createContext(sandbox);
-            locatorInstance = vm.runInContext(locatorStr, context);
+            if (parsedSteps.length === 0) {
+                throw new Error('Locator expression contains no steps.');
+            }
+            locatorInstance = constructLocator(page, parsedSteps);
             // Verify that the result is indeed a Playwright Locator
             if (!locatorInstance || typeof locatorInstance.count !== 'function') {
                 throw new Error('Expression did not evaluate to a Playwright Locator instance.');
@@ -331,20 +342,10 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
             });
             if (!locatorStr.trim())
                 return true;
-            // Evaluate the locator
-            const sandbox = {
-                page,
-                locator: page.locator.bind(page),
-                getByRole: page.getByRole.bind(page),
-                getByText: page.getByText.bind(page),
-                getByLabel: page.getByLabel.bind(page),
-                getByPlaceholder: page.getByPlaceholder.bind(page),
-                getByAltText: page.getByAltText.bind(page),
-                getByTitle: page.getByTitle.bind(page),
-                getByTestId: page.getByTestId.bind(page),
-            };
-            const context = vm.createContext(sandbox);
-            const locatorInstance = vm.runInContext(locatorStr, context);
+            const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            if (parsedSteps.length === 0)
+                return false;
+            const locatorInstance = constructLocator(page, parsedSteps);
             const count = await locatorInstance.count();
             if (count === 0) {
                 return false;
@@ -389,19 +390,11 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
         let totalMatches = 0;
         for (const branchExpr of rawBranches) {
             try {
-                const sandbox = {
-                    page,
-                    locator: page.locator.bind(page),
-                    getByRole: page.getByRole.bind(page),
-                    getByText: page.getByText.bind(page),
-                    getByLabel: page.getByLabel.bind(page),
-                    getByPlaceholder: page.getByPlaceholder.bind(page),
-                    getByAltText: page.getByAltText.bind(page),
-                    getByTitle: page.getByTitle.bind(page),
-                    getByTestId: page.getByTestId.bind(page),
-                };
-                const ctx = vm.createContext(sandbox);
-                const locatorInstance = vm.runInContext(branchExpr, ctx);
+                const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(branchExpr);
+                if (parsedSteps.length === 0) {
+                    throw new Error('Branch expression contains no steps.');
+                }
+                const locatorInstance = constructLocator(page, parsedSteps);
                 const count = await locatorInstance.count();
                 totalMatches += count;
                 branches.push({ locatorStr: branchExpr, matchCount: count, isWinner: false });
@@ -488,19 +481,11 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
                     await this.ensureAgentInjected(page);
                 }
                 catch { /* best effort */ }
-                const sandbox = {
-                    page,
-                    locator: page.locator.bind(page),
-                    getByRole: page.getByRole.bind(page),
-                    getByText: page.getByText.bind(page),
-                    getByLabel: page.getByLabel.bind(page),
-                    getByPlaceholder: page.getByPlaceholder.bind(page),
-                    getByAltText: page.getByAltText.bind(page),
-                    getByTitle: page.getByTitle.bind(page),
-                    getByTestId: page.getByTestId.bind(page),
-                };
-                const ctx = vm.createContext(sandbox);
-                const locatorInstance = vm.runInContext(locatorStr, ctx);
+                const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+                if (parsedSteps.length === 0) {
+                    throw new Error('Locator expression contains no steps.');
+                }
+                const locatorInstance = constructLocator(page, parsedSteps);
                 const count = await locatorInstance.count();
                 const found = count > 0;
                 if (found)
@@ -523,19 +508,10 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
             return false;
         try {
             await this.ensureAgentInjected(page);
-            const sandbox = {
-                page,
-                locator: page.locator.bind(page),
-                getByRole: page.getByRole.bind(page),
-                getByText: page.getByText.bind(page),
-                getByLabel: page.getByLabel.bind(page),
-                getByPlaceholder: page.getByPlaceholder.bind(page),
-                getByAltText: page.getByAltText.bind(page),
-                getByTitle: page.getByTitle.bind(page),
-                getByTestId: page.getByTestId.bind(page),
-            };
-            const context = vm.createContext(sandbox);
-            const locatorInstance = vm.runInContext(locatorStr, context);
+            const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            if (parsedSteps.length === 0)
+                return false;
+            const locatorInstance = constructLocator(page, parsedSteps);
             const handle = await locatorInstance.elementHandle();
             if (!handle)
                 return false;
@@ -554,19 +530,10 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
             return false;
         try {
             await this.ensureAgentInjected(page);
-            const sandbox = {
-                page,
-                locator: page.locator.bind(page),
-                getByRole: page.getByRole.bind(page),
-                getByText: page.getByText.bind(page),
-                getByLabel: page.getByLabel.bind(page),
-                getByPlaceholder: page.getByPlaceholder.bind(page),
-                getByAltText: page.getByAltText.bind(page),
-                getByTitle: page.getByTitle.bind(page),
-                getByTestId: page.getByTestId.bind(page),
-            };
-            const context = vm.createContext(sandbox);
-            const locatorInstance = vm.runInContext(locatorStr, context);
+            const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            if (parsedSteps.length === 0)
+                return false;
+            const locatorInstance = constructLocator(page, parsedSteps);
             const handle = await locatorInstance.elementHandle();
             if (!handle)
                 return false;
@@ -602,19 +569,11 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
                 catch { /* best effort */ }
                 for (const locatorStr of locatorStrs) {
                     try {
-                        const sandbox = {
-                            page,
-                            locator: page.locator.bind(page),
-                            getByRole: page.getByRole.bind(page),
-                            getByText: page.getByText.bind(page),
-                            getByLabel: page.getByLabel.bind(page),
-                            getByPlaceholder: page.getByPlaceholder.bind(page),
-                            getByAltText: page.getByAltText.bind(page),
-                            getByTitle: page.getByTitle.bind(page),
-                            getByTestId: page.getByTestId.bind(page),
-                        };
-                        const ctx = vm.createContext(sandbox);
-                        const locatorInstance = vm.runInContext(locatorStr, ctx);
+                        const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+                        if (parsedSteps.length === 0) {
+                            throw new Error('Locator expression contains no steps.');
+                        }
+                        const locatorInstance = constructLocator(page, parsedSteps);
                         const count = await locatorInstance.count();
                         const found = count > 0;
                         if (found) {
@@ -1081,19 +1040,11 @@ export class UIAutomationSDK {
             const step = steps[idx];
             const nextLocatorStr = `${currentLocatorStr}.${(0, playwright_locator_lens_parser_1.stringifyLocator)([step], false)}`;
             try {
-                const sandbox = {
-                    page,
-                    locator: page.locator.bind(page),
-                    getByRole: page.getByRole.bind(page),
-                    getByText: page.getByText.bind(page),
-                    getByLabel: page.getByLabel.bind(page),
-                    getByPlaceholder: page.getByPlaceholder.bind(page),
-                    getByAltText: page.getByAltText.bind(page),
-                    getByTitle: page.getByTitle.bind(page),
-                    getByTestId: page.getByTestId.bind(page),
-                };
-                const context = vm.createContext(sandbox);
-                const currentLocator = vm.runInContext(nextLocatorStr, context);
+                const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(nextLocatorStr);
+                if (parsedSteps.length === 0) {
+                    throw new Error('Locator expression contains no steps.');
+                }
+                const currentLocator = constructLocator(page, parsedSteps);
                 const count = await currentLocator.count();
                 if (count > 0) {
                     analysisSteps.push({
@@ -1493,7 +1444,7 @@ export class UIAutomationSDK {
                         return results.slice(0, 5);
                     }, expectedRole);
                     if (allRoleElements.length > 0) {
-                        message = `No elements with role "${expectedRole}" found — but similar elements exist.`;
+                        message = `Role "${expectedRole}" exists, but accessible name did not match.`;
                         allRoleElements.forEach((item) => {
                             if (item.accessibleName) {
                                 suggestions.push({

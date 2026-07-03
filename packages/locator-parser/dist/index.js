@@ -68,8 +68,29 @@ function tokenize(str) {
             tokens.push({ type: 'STRING', value: val });
             continue;
         }
-        // Regex literals
+        // Comments or Regex literals
         if (char === '/') {
+            if (i + 1 < str.length && str[i + 1] === '/') {
+                // Single-line comment
+                i += 2;
+                while (i < str.length && str[i] !== '\n' && str[i] !== '\r') {
+                    i++;
+                }
+                continue;
+            }
+            if (i + 1 < str.length && str[i + 1] === '*') {
+                // Multi-line comment
+                i += 2;
+                while (i < str.length) {
+                    if (str[i] === '*' && i + 1 < str.length && str[i + 1] === '/') {
+                        i += 2;
+                        break;
+                    }
+                    i++;
+                }
+                continue;
+            }
+            // Regex literals
             let val = '';
             i++; // skip leading '/'
             let isEscape = false;

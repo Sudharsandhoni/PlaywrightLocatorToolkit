@@ -1,22 +1,23 @@
 /* Playwright Locator Lens UI Stylesheet */
 
 :root {
-  --bg-main: #090d16;
-  --bg-card: #111827;
-  --bg-input: #1f2937;
-  --border-color: #374151;
-  --text-main: #f9fafb;
-  --text-muted: #9ca3af;
+  /* VS Code Theme Mapping with Fallbacks */
+  --bg-main: var(--vscode-sideBar-background, #090d16);
+  --bg-card: var(--vscode-editor-background, #111827);
+  --bg-input: var(--vscode-input-background, #1f2937);
+  --border-color: var(--vscode-sideBar-border, var(--vscode-widget-border, #374151));
+  --text-main: var(--vscode-foreground, #f9fafb);
+  --text-muted: var(--vscode-descriptionForeground, #9ca3af);
   
-  --accent-start: #6366f1;
-  --accent-end: #8b5cf6;
-  --accent-hover: #4f46e5;
+  --accent-start: var(--vscode-button-background, #6366f1);
+  --accent-end: var(--vscode-button-hoverBackground, #8b5cf6);
+  --accent-hover: var(--vscode-button-hoverBackground, #4f46e5);
   
-  --color-success: #10b981;
+  --color-success: var(--vscode-testing-iconPassed, #10b981);
   --color-success-bg: rgba(16, 185, 129, 0.15);
-  --color-warning: #f59e0b;
+  --color-warning: var(--vscode-testing-iconQueued, #f59e0b);
   --color-warning-bg: rgba(245, 158, 11, 0.15);
-  --color-danger: #ef4444;
+  --color-danger: var(--vscode-testing-iconFailed, #ef4444);
   --color-danger-bg: rgba(239, 68, 68, 0.15);
 }
 
@@ -25,8 +26,8 @@ body {
   padding: 12px;
   background-color: var(--bg-main);
   color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 13px;
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
   line-height: 1.5;
 }
 
@@ -36,14 +37,14 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-main);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-color);
+  background: var(--vscode-scrollbarSlider-background, var(--border-color));
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: var(--vscode-scrollbarSlider-hoverBackground, var(--text-muted));
 }
 
 /* Layout */
@@ -171,7 +172,9 @@ select {
 input[type="text"]:focus,
 textarea:focus,
 select:focus {
-  border-color: var(--accent-start);
+  border-color: var(--vscode-focusBorder, var(--accent-start));
+  outline: 1px solid var(--vscode-focusBorder, var(--accent-start));
+  outline-offset: -1px;
 }
 
 textarea {
@@ -206,15 +209,15 @@ textarea {
 
 /* Buttons */
 .btn {
-  background-color: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-main);
-  padding: 8px 16px;
+  background-color: var(--vscode-button-secondaryBackground, var(--bg-input));
+  border: 1px solid var(--vscode-button-secondaryBorder, var(--border-color));
+  border-radius: 4px;
+  color: var(--vscode-button-secondaryForeground, var(--text-main));
+  padding: 6px 12px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -222,34 +225,35 @@ textarea {
 }
 
 .btn:hover:not(:disabled) {
+  background-color: var(--vscode-button-secondaryHoverBackground, rgba(255, 255, 255, 0.08));
   border-color: var(--text-muted);
-  background-color: rgba(255, 255, 255, 0.05);
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent-start) 0%, var(--accent-end) 100%);
-  border: none;
-  color: #ffffff;
+  background: var(--vscode-button-background, linear-gradient(135deg, var(--accent-start) 0%, var(--accent-end) 100%));
+  border: 1px solid var(--vscode-button-border, transparent);
+  color: var(--vscode-button-foreground, #ffffff);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  box-shadow: 0 0 10px rgba(99, 102, 241, 0.4);
+  background: var(--vscode-button-hoverBackground, var(--accent-hover));
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
 }
 
 .btn-secondary {
-  background-color: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
+  background-color: var(--vscode-button-secondaryBackground, transparent);
+  border: 1px solid var(--vscode-button-secondaryBorder, var(--border-color));
+  color: var(--vscode-button-secondaryForeground, var(--text-muted));
 }
 
 .btn-secondary:hover:not(:disabled) {
-  color: var(--text-main);
+  background-color: var(--vscode-button-secondaryHoverBackground, rgba(255, 255, 255, 0.08));
+  color: var(--vscode-button-secondaryForeground, var(--text-main));
   border-color: var(--text-muted);
 }
 

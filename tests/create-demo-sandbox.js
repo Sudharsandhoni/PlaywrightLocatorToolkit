@@ -1,0 +1,300 @@
+const fs = require('fs');
+const path = require('path');
+
+// 1. Generate the demo webview HTML with mocked VS Code API
+const webviewDir = path.join(__dirname, '..', 'packages', 'extension', 'webview');
+const indexHtmlPath = path.join(webviewDir, 'index.html');
+let indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+
+// Inject vscode api mock
+const mockScript = `
+  <script>
+    window.acquireVsCodeApi = () => {
+      return {
+        postMessage: (msg) => {
+          window.parent.postMessage({ fromWebview: true, data: msg }, '*');
+        }
+      };
+    };
+  </script>
+`;
+
+// Replace head placeholder to include mock script
+indexHtml = indexHtml.replace('<head>', '<head>' + mockScript);
+
+// Replace asset URI placeholders with local relative filenames
+indexHtml = indexHtml.replace(/\$\{styleUri\}/g, 'style.css');
+indexHtml = indexHtml.replace(/\$\{scriptUri\}/g, 'main.js');
+indexHtml = indexHtml.replace(/\$\{logoUri\}/g, '../icon.png');
+
+fs.writeFileSync(path.join(webviewDir, 'demo_webview.html'), indexHtml, 'utf8');
+console.log('✓ Created packages/extension/webview/demo_webview.html');
+
+// 2. Generate the demo sandbox layout page
+const sandboxHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Playwright Locator Lens - Demo Sandbox</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      height: 100vh;
+      background-color: #1e1e1e;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+    .sidebar-pane {
+      width: 380px;
+      height: 100%;
+      border-right: 2px solid #2d2d2d;
+      box-sizing: border-box;
+      background-color: #090d16;
+    }
+    .browser-pane {
+      flex: 1;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background-color: #f3f4f6;
+    }
+    .browser-toolbar {
+      height: 40px;
+      background-color: #ffffff;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+    }
+    .browser-address {
+      flex: 1;
+      height: 24px;
+      border-radius: 4px;
+      border: 1px solid #d1d5db;
+      background-color: #f9fafb;
+      font-family: monospace;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      color: #4b5563;
+    }
+    .browser-frame {
+      flex: 1;
+      border: none;
+      width: 100%;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- Mock VS Code Sidebar -->
+  <div class="sidebar-pane">
+    <iframe id="webview-frame" src="../packages/extension/webview/demo_webview.html"></iframe>
+  </div>
+
+  <!-- Mock Chrome Window -->
+  <div class="browser-pane">
+    <div class="browser-toolbar">
+      <span style="font-size:16px;">🌐</span>
+      <div class="browser-address" id="browser-url">file:///D:/learning/PlaywrightLocatorLens/tests/testpage.html</div>
+      <span style="font-size:12px; color:#9ca3af; margin-left: auto;">Chrome Remote Debugging (CDP 9222)</span>
+    </div>
+    <div class="browser-frame">
+      <iframe id="target-frame" src="testpage.html"></iframe>
+    </div>
+  </div>
+
+  <script>
+    const webviewIframe = document.getElementById('webview-frame');
+    const targetIframe = document.getElementById('target-frame');
+
+    // Simple mock database of locators
+    const MOCK_EVALUATIONS = {
+      "getByLabel('Email Address')": {
+        success: true,
+        count: 1,
+        confidence: 95,
+        confidenceFactors: [
+          { text: "Uses getByLabel standard form query", positive: true },
+          { text: "Single unique match", positive: true }
+        ],
+        alternatives: [
+          { type: "placeholder", confidence: 90, selector: "getByPlaceholder('john@example.com')", reason: "Matches placeholder value" },
+          { type: "css", confidence: 85, selector: "locator('#email-input')", reason: "Target ID matches selector rule" }
+        ],
+        elements: [
+          { tagName: "INPUT", role: "textbox", id: "email-input", visible: true, editable: true, accessibleName: "Email Address", className: "form-group" }
+        ],
+        selector: "#email-input"
+      },
+      "getByRole('button')": {
+        success: true,
+        count: 2,
+        confidence: 60,
+        confidenceFactors: [
+          { text: "Multiple matches found (2)", positive: false },
+          { text: "Uses generic role selector", positive: false }
+        ],
+        alternatives: [
+          { type: "role", confidence: 95, selector: "getByRole('button', { name: 'Sign In' })", reason: "Refines matching elements to unique target" },
+          { type: "testid", confidence: 92, selector: "getByTestId('login-submit')", reason: "Resolves to stable testing id" }
+        ],
+        elements: [
+          { tagName: "BUTTON", role: "button", id: "login-submit-btn", visible: true, editable: false, accessibleName: "Sign In", className: "btn btn-primary" },
+          { tagName: "BUTTON", role: "button", id: "bad-button-no-text", visible: true, editable: false, accessibleName: "", className: "btn btn-primary" }
+        ],
+        selector: "button" // matches both
+      },
+      "getByRole('button', { name: 'Sign In' })": {
+        success: true,
+        count: 1,
+        confidence: 95,
+        confidenceFactors: [
+          { text: "Uses getByRole with accessible name filter", positive: true },
+          { text: "Single unique match", positive: true }
+        ],
+        alternatives: [
+          { type: "testid", confidence: 92, selector: "getByTestId('login-submit')", reason: "Stable test attribute" },
+          { type: "css", confidence: 85, selector: "locator('#login-submit-btn')", reason: "Element ID match" }
+        ],
+        elements: [
+          { tagName: "BUTTON", role: "button", id: "login-submit-btn", visible: true, editable: false, accessibleName: "Sign In", className: "btn btn-primary" }
+        ],
+        selector: "#login-submit-btn"
+      }
+    };
+
+    function sendToWebview(msg) {
+      webviewIframe.contentWindow.postMessage(msg, '*');
+    }
+
+    function handleWebviewMessage(msg) {
+      console.log('Received from webview:', msg);
+
+      switch (msg.type) {
+        case 'get-config':
+          sendToWebview({ type: 'beta-config', enabled: true });
+          break;
+
+        case 'connect-browser':
+        case 'launch-browser':
+          setTimeout(() => {
+            sendToWebview({
+              type: 'connect-status',
+              connected: true,
+              activePageId: 'page-test',
+              pages: [
+                { id: 'page-test', title: 'Playwright Locator Lens Test Page', url: 'file:///D:/learning/PlaywrightLocatorLens/tests/testpage.html' }
+              ]
+            });
+          }, 800);
+          break;
+
+        case 'disconnect-browser':
+          sendToWebview({ type: 'connect-status', connected: false });
+          clearHighlights();
+          break;
+
+        case 'evaluate-locator':
+          const query = msg.locatorStr.trim();
+          setTimeout(() => {
+            if (MOCK_EVALUATIONS[query]) {
+              const res = MOCK_EVALUATIONS[query];
+              sendToWebview({
+                type: 'evaluation-result',
+                result: {
+                  success: true,
+                  count: res.count,
+                  confidence: res.confidence,
+                  confidenceFactors: res.confidenceFactors,
+                  alternatives: res.alternatives,
+                  elements: res.elements
+                }
+              });
+              highlightInTarget(res.selector);
+            } else {
+              sendToWebview({
+                type: 'evaluation-result',
+                result: {
+                  success: true,
+                  count: 0,
+                  confidence: 0,
+                  confidenceFactors: [{ text: "No matches found in mock sandbox", positive: false }],
+                  alternatives: [],
+                  elements: []
+                }
+              });
+              clearHighlights();
+            }
+          }, 500);
+          break;
+
+        case 'highlight-locator':
+          const highlightQuery = msg.locatorStr.trim();
+          if (MOCK_EVALUATIONS[highlightQuery]) {
+            highlightInTarget(MOCK_EVALUATIONS[highlightQuery].selector);
+          }
+          break;
+
+        case 'clear-highlight':
+          clearHighlights();
+          break;
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.fromWebview) {
+        handleWebviewMessage(event.data.data);
+      }
+    });
+
+    // Helper functions to highlight inside the target iframe
+    function highlightInTarget(selector) {
+      clearHighlights();
+      try {
+        const targetDoc = targetIframe.contentDocument || targetIframe.contentWindow.document;
+        const elements = targetDoc.querySelectorAll(selector);
+        
+        elements.forEach(el => {
+          // Add temporary styling overlay
+          const rect = el.getBoundingClientRect();
+          const highlightDiv = targetDoc.createElement('div');
+          highlightDiv.className = 'locator-lens-mock-overlay';
+          highlightDiv.style.position = 'absolute';
+          highlightDiv.style.left = (rect.left + targetDoc.documentElement.scrollLeft) + 'px';
+          highlightDiv.style.top = (rect.top + targetDoc.documentElement.scrollTop) + 'px';
+          highlightDiv.style.width = rect.width + 'px';
+          highlightDiv.style.height = rect.height + 'px';
+          highlightDiv.style.border = '2px dashed #8b5cf6';
+          highlightDiv.style.backgroundColor = 'rgba(139, 92, 246, 0.15)';
+          highlightDiv.style.zIndex = '99999';
+          highlightDiv.style.pointerEvents = 'none';
+          targetDoc.body.appendChild(highlightDiv);
+        });
+      } catch (e) {
+        console.error('Error drawing highlights:', e);
+      }
+    }
+
+    function clearHighlights() {
+      try {
+        const targetDoc = targetIframe.contentDocument || targetIframe.contentWindow.document;
+        const overlays = targetDoc.querySelectorAll('.locator-lens-mock-overlay');
+        overlays.forEach(o => o.remove());
+      } catch (e) {}
+    }
+  </script>
+</body>
+</html>
+`;
+
+fs.writeFileSync(path.join(__dirname, 'demo_sandbox.html'), sandboxHtml, 'utf8');
+console.log('✓ Created tests/demo_sandbox.html');

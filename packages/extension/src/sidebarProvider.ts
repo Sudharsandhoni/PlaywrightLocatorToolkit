@@ -65,6 +65,22 @@ async function waitForCDP(port: number, timeoutMs = 15000): Promise<void> {
   throw new Error(`CDP server did not start on port ${port} within ${timeoutMs}ms.`);
 }
 
+async function rmWithRetry(dirPath: string, maxAttempts = 3, delayMs = 200): Promise<void> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (fs.existsSync(dirPath)) {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      }
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private engine = new LocatorEngine();
@@ -97,6 +113,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               const port = config.get<number>('debuggingPort', 9222);
               const customPath = config.get<string>('browserPath', '');
               const cleanProfile = config.get<boolean>('cleanBrowserProfile', false);
+
+              if (typeof port !== 'number' || isNaN(port) || port < 1024 || port > 65535) {
+                throw new Error(`Invalid debugging port: ${port}. Must be a number between 1024 and 65535.`);
+              }
 
               const executablePath = customPath || findChrome();
               if (!fs.existsSync(executablePath)) {
@@ -134,19 +154,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               });
               this.spawnedBrowser.unref();
 
-              this.spawnedBrowser.on('exit', () => {
+              this.spawnedBrowser.on('exit', async () => {
                 this.spawnedBrowser = undefined;
                 if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
                   try {
-                    fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+                    await rmWithRetry(this.tempProfileDir);
                   } catch (e) {
                     console.error('Failed to clean browser profile:', e);
                   }
                 }
-                webviewView.webview.postMessage({
-                  type: 'connect-status',
-                  connected: false
-                });
+                try {
+                  webviewView.webview.postMessage({
+                    type: 'connect-status',
+                    connected: false
+                  });
+                } catch {}
               });
 
               await waitForCDP(port);
@@ -174,6 +196,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           }
           case 'connect-browser': {
             try {
+              if (!data.cdpUrl || typeof data.cdpUrl !== 'string') {
+                throw new Error('CDP Connection URL is required.');
+              }
+              const parsedUrl = new URL(data.cdpUrl);
+              if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+                throw new Error('CDP Connection URL protocol must be http or https.');
+              }
+              const hostPort = parsedUrl.port;
+              if (hostPort) {
+                const portNum = parseInt(hostPort, 10);
+                if (isNaN(portNum) || portNum < 1024 || portNum > 65535) {
+                  throw new Error(`Invalid port in CDP URL: ${hostPort}. Must be between 1024 and 65535.`);
+                }
+              }
               const pages = await this.engine.connect(data.cdpUrl);
               const activePageId = pages[0]?.id;
               this.activePageId = activePageId;
@@ -217,7 +253,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             const cleanProfile = config.get<boolean>('cleanBrowserProfile', false);
             if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
               try {
-                fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+                await rmWithRetry(this.tempProfileDir);
               } catch {}
             }
 
@@ -477,20 +513,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.onDidDispose(() => {
       configChangeDisposable.dispose();
-      if (this.spawnedBrowser) {
-        try { this.spawnedBrowser.kill(); } catch {}
-        this.spawnedBrowser = undefined;
-      }
-      const config = vscode.workspace.getConfiguration('playwright-locator-lens');
-      const cleanProfile = config.get<boolean>('cleanBrowserProfile', false);
-      if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
-        try {
-          fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
-        } catch (e) {
-          console.error('Failed to clean browser profile on dispose:', e);
-        }
-      }
-      this.engine.disconnect();
+      // Drop the active CDP connection but leave the browser running and profile folder intact.
+      this.engine.softDisconnect();
     });
   }
 
@@ -502,10 +526,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'webview', 'style.css'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'webview', 'main.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'icon.png'));
+    const cspSource = webview.cspSource;
 
     html = html.replace(/\$\{styleUri\}/g, styleUri.toString());
     html = html.replace(/\$\{scriptUri\}/g, scriptUri.toString());
     html = html.replace(/\$\{logoUri\}/g, logoUri.toString());
+    html = html.replace(/\$\{cspSource\}/g, cspSource);
 
     return html;
   }

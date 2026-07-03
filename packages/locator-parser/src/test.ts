@@ -86,6 +86,16 @@ try {
     parseLocator("locator('div').or.locator('span')");
   }, /Expected token LPAREN/);
 
+  // Test Case 9: Comments
+  console.log('Test Case 9: Comments...');
+  const steps9 = parseLocator("page.locator('div') // single-line comment\n.locator('span') /* multi-line\ncomment */.first()");
+  assert.strictEqual(steps9.length, 3);
+  assert.strictEqual(steps9[0].name, 'locator');
+  assert.strictEqual(steps9[0].args[0], 'div');
+  assert.strictEqual(steps9[1].name, 'locator');
+  assert.strictEqual(steps9[1].args[0], 'span');
+  assert.strictEqual(steps9[2].name, 'first');
+
   console.log('All Unit Tests Passed Successfully!');
 } catch (error) {
   console.error('Test Failed:', error);

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Playwright Locator Lens Test Page</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f3f4f6;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input[type="text"], input[type="email"], select, textarea {
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .btn {
+      padding: 10px 15px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-secondary { background: #6b7280; color: white; }
+    .section-card {
+      border: 1px solid #e5e7eb;
+      padding: 15px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+    .accessibility-error {
+      border: 2px dashed #f59e0b;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Playwright Locator Lens Test Suite</h1>
+    <p>This page contains elements designed to test the Locator Lens extension end-to-end.</p>
+
+    <!-- Section 1: Standard Form (Success / High Confidence) -->
+    <fieldset class="section-card" id="login-form-section">
+      <legend>User Authentication Form</legend>
+      
+      <div class="form-group">
+        <label for="username-input">Username</label>
+        <input type="text" id="username-input" name="username" placeholder="johndoe">
+      </div>
+
+      <div class="form-group">
+        <label for="email-input">Email Address</label>
+        <input type="email" id="email-input" name="email" placeholder="john@example.com" required>
+      </div>
+
+      <div class="form-group">
+        <label for="user-role">Account Role</label>
+        <select id="user-role" name="role">
+          <option value="user">Standard User</option>
+          <option value="admin">Administrator</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <button id="login-submit-btn" class="btn btn-primary" data-testid="login-submit">Sign In</button>
+        <button type="button" class="btn btn-secondary">Reset</button>
+      </div>
+    </fieldset>
+
+    <!-- Section 2: Duplicates & Indexing (Multiple Matches / Medium Confidence) -->
+    <section class="section-card" id="user-management-section">
+      <h2>User Directory</h2>
+      <table style="width:100%; border-collapse: collapse;">
+        <thead>
+          <tr style="border-bottom: 2px solid #ddd;">
+            <th style="text-align:left; padding:8px;">Name</th>
+            <th style="text-align:left; padding:8px;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding:8px;">Alice Smith</td>
+            <td style="padding:8px;">
+              <button class="btn btn-secondary delete-action-btn">Delete</button>
+            </td>
+          </tr>
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding:8px;">Bob Jones</td>
+            <td style="padding:8px;">
+              <button class="btn btn-secondary delete-action-btn">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 3: Dynamic IDs & Fragile Selectors -->
+    <section class="section-card" id="dynamic-elements-section">
+      <h2>Dynamic UI Components</h2>
+      <div class="form-group">
+        <label>MUI Input Component</label>
+        <!-- Dynamic/Generated ID -->
+        <input type="text" id="mui-48172" placeholder="Dynamic MUI Field">
+      </div>
+      <div class="form-group">
+        <label>Ag-Grid Filter</label>
+        <input type="text" id="grid-filter-xyz123" placeholder="Ag-Grid Input">
+      </div>
+      <div class="form-group">
+        <!-- Button with dynamic id -->
+        <button id="button-98765-xyz" class="btn btn-danger">Confirm Deletion</button>
+      </div>
+    </section>
+
+    <!-- Section 4: Accessibility Issues (Warnings) -->
+    <section class="section-card" id="accessibility-violations-section">
+      <h2>Accessibility Audit Area</h2>
+      
+      <!-- Violoation 1: Missing Label/Placeholder -->
+      <div class="accessibility-error">
+        <p><strong>Violation 1: Input with no label/placeholder</strong></p>
+        <input type="text" id="bad-input-no-label" name="unlabeled_field">
+      </div>
+
+      <!-- Violation 2: Image with no Alt Text -->
+      <div class="accessibility-error">
+        <p><strong>Violation 2: Image with no alt text</strong></p>
+        <img id="bad-image-no-alt" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='50' height='50'><rect width='50' height='50' style='fill:rgb(0,0,255);'/></svg>" width="50" height="50">
+      </div>
+
+      <!-- Violation 3: Button with no Text or Accessible Name -->
+      <div class="accessibility-error">
+        <p><strong>Violation 3: Button with no text</strong></p>
+        <button id="bad-button-no-text" class="btn btn-primary" style="width:40px; height:40px;"></button>
+      </div>
+    </section>
+
+    <!-- Section 5: Or/And Combinations -->
+    <section class="section-card" id="logical-combinations-section">
+      <h2>Logical Combinations</h2>
+      <div class="form-group">
+        <label for="promo-code">Promo Code</label>
+        <!-- Matches input[required] AND text -->
+        <input type="text" id="promo-code" class="promo-input-field" placeholder="Enter PROMO" required>
+      </div>
+      <div class="form-group">
+        <!-- Either input[type="submit"] or button.submit -->
+        <button class="btn btn-primary submit-action-btn">Apply Promo</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // Script to support testing action simulations
+    document.getElementById('login-submit-btn').addEventListener('click', () => {
+      console.log('Action: Signed In successfully!');
+    });
+    
+    document.getElementById('button-98765-xyz').addEventListener('click', () => {
+      console.log('Action: Dynamic Delete Clicked!');
+    });
+  </script>
+</body>
+</html>

@@ -47,6 +47,7 @@
   // Controls & Dropdowns
   const undoBtn = document.getElementById('undo-btn');
   const redoBtn = document.getElementById('redo-btn');
+  const copyPlaygroundBtn = document.getElementById('copy-playground-btn');
   const historyBtn = document.getElementById('history-btn');
   const historyDropdown = document.getElementById('history-dropdown');
   const autocompleteList = document.getElementById('autocomplete-list');
@@ -596,6 +597,24 @@
     historyDropdown.classList.toggle('hidden');
     renderHistoryDropdown();
   });
+
+  if (copyPlaygroundBtn) {
+    copyPlaygroundBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const val = locatorInput.value.trim();
+      if (!val) return;
+      navigator.clipboard.writeText(val).then(() => {
+        const originalTitle = copyPlaygroundBtn.title;
+        copyPlaygroundBtn.title = '✓ Copied!';
+        const originalText = copyPlaygroundBtn.textContent;
+        copyPlaygroundBtn.textContent = '✓';
+        setTimeout(() => {
+          copyPlaygroundBtn.title = originalTitle;
+          copyPlaygroundBtn.textContent = originalText;
+        }, 1000);
+      });
+    });
+  }
 
   // Close popups when clicking outside
   document.addEventListener('click', (e) => {

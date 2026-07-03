@@ -45,7 +45,6 @@ var child_process = __toESM(require("child_process"));
 var http = __toESM(require("http"));
 
 // ../engine/src/index.ts
-var vm = __toESM(require("vm"));
 var import_playwright_core = require("playwright-core");
 
 // ../locator-parser/src/index.ts
@@ -111,6 +110,24 @@ function tokenize(str) {
       continue;
     }
     if (char === "/") {
+      if (i + 1 < str.length && str[i + 1] === "/") {
+        i += 2;
+        while (i < str.length && str[i] !== "\n" && str[i] !== "\r") {
+          i++;
+        }
+        continue;
+      }
+      if (i + 1 < str.length && str[i + 1] === "*") {
+        i += 2;
+        while (i < str.length) {
+          if (str[i] === "*" && i + 1 < str.length && str[i + 1] === "/") {
+            i += 2;
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
       let val = "";
       i++;
       let isEscape = false;
@@ -332,11 +349,7 @@ function stringifyArgument(arg) {
 // ../browser-agent/src/index.ts
 var AGENT_SCRIPT = `
 (function() {
-  if (window.__locatorLensAgent) {
-    try {
-      window.__locatorLensAgent.clear();
-    } catch (e) {}
-  }
+  if (window.__locatorLensAgent) return;
 
   const styleId = '__locator_lens_styles';
   if (!document.getElementById(styleId)) {
@@ -1488,9 +1501,7 @@ var AGENT_SCRIPT = `
 
         // 1. Missing Label
         const label = getAccessibleName(el);
-        const skipTags = ['a', 'button'];
-        const skipRoles = ['button', 'link'];
-        if (!label && !skipTags.includes(tagName) && !skipRoles.includes(role)) {
+        if (!label) {
           accessibilityIssues.push({
             elementId: el.id || undefined,
             tagName,
@@ -1649,8 +1660,58 @@ var AGENT_SCRIPT = `
 `;
 
 // ../engine/src/index.ts
+var ALLOWED_LOCATOR_METHODS = /* @__PURE__ */ new Set([
+  "locator",
+  "getByRole",
+  "getByText",
+  "getByLabel",
+  "getByPlaceholder",
+  "getByAltText",
+  "getByTitle",
+  "getByTestId",
+  "first",
+  "last",
+  "nth",
+  "filter",
+  "or",
+  "and"
+]);
+function resolveArg(arg, page) {
+  if (arg && typeof arg === "object") {
+    if (arg.type === "nested_locator") {
+      return constructLocator(page, arg.steps);
+    }
+    if (arg.source !== void 0 && arg.flags !== void 0) {
+      return new RegExp(arg.source, arg.flags);
+    }
+    if (arg instanceof RegExp) {
+      return arg;
+    }
+    const resolvedObj = {};
+    for (const [k, v] of Object.entries(arg)) {
+      resolvedObj[k] = resolveArg(v, page);
+    }
+    return resolvedObj;
+  }
+  return arg;
+}
+function constructLocator(page, steps) {
+  let current = page;
+  for (const step of steps) {
+    if (!ALLOWED_LOCATOR_METHODS.has(step.name)) {
+      throw new Error(`Forbidden or unsupported locator method: ${step.name}`);
+    }
+    const method = current[step.name];
+    if (typeof method !== "function") {
+      throw new Error(`Method ${step.name} is not available on current locator target.`);
+    }
+    const resolvedArgs = step.args.map((arg) => resolveArg(arg, page));
+    current = method.apply(current, resolvedArgs);
+  }
+  return current;
+}
 function toCamelCase(str) {
-  const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+  const parts = str.split(/[^a-zA-Z0-9]+|(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).filter(Boolean);
   if (parts.length === 0) return "";
   return parts.map((p, idx) => {
     const cleaned = p.replace(/[^a-zA-Z0-9]/g, "");
@@ -1661,7 +1722,8 @@ function toCamelCase(str) {
   }).join("");
 }
 function toPascalCase(str) {
-  const parts = str.split(/[^a-zA-Z0-9]/).filter(Boolean);
+  const parts = str.split(/[^a-zA-Z0-9]+|(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).filter(Boolean);
+  if (parts.length === 0) return "";
   return parts.map((p) => {
     const cleaned = p.replace(/[^a-zA-Z0-9]/g, "");
     return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
@@ -1757,7 +1819,10 @@ var LocatorEngine = class {
   }
   async ensureAgentInjected(page) {
     try {
-      await page.evaluate(AGENT_SCRIPT);
+      const isInjected = await page.evaluate(() => typeof window.__locatorLensAgent !== "undefined");
+      if (!isInjected) {
+        await page.evaluate(AGENT_SCRIPT);
+      }
     } catch (err) {
       throw new Error(`Failed to inject locator lens browser agent: ${err.message}`);
     }
@@ -1827,21 +1892,12 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
         alternatives: []
       };
     }
-    const sandbox = {
-      page,
-      locator: page.locator.bind(page),
-      getByRole: page.getByRole.bind(page),
-      getByText: page.getByText.bind(page),
-      getByLabel: page.getByLabel.bind(page),
-      getByPlaceholder: page.getByPlaceholder.bind(page),
-      getByAltText: page.getByAltText.bind(page),
-      getByTitle: page.getByTitle.bind(page),
-      getByTestId: page.getByTestId.bind(page)
-    };
     let locatorInstance;
     try {
-      const context = vm.createContext(sandbox);
-      locatorInstance = vm.runInContext(locatorStr, context);
+      if (parsedSteps.length === 0) {
+        throw new Error("Locator expression contains no steps.");
+      }
+      locatorInstance = constructLocator(page, parsedSteps);
       if (!locatorInstance || typeof locatorInstance.count !== "function") {
         throw new Error("Expression did not evaluate to a Playwright Locator instance.");
       }
@@ -1923,19 +1979,9 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
         (_a = window.__locatorLensAgent) == null ? void 0 : _a.clear();
       });
       if (!locatorStr.trim()) return true;
-      const sandbox = {
-        page,
-        locator: page.locator.bind(page),
-        getByRole: page.getByRole.bind(page),
-        getByText: page.getByText.bind(page),
-        getByLabel: page.getByLabel.bind(page),
-        getByPlaceholder: page.getByPlaceholder.bind(page),
-        getByAltText: page.getByAltText.bind(page),
-        getByTitle: page.getByTitle.bind(page),
-        getByTestId: page.getByTestId.bind(page)
-      };
-      const context = vm.createContext(sandbox);
-      const locatorInstance = vm.runInContext(locatorStr, context);
+      const parsedSteps = parseLocator(locatorStr);
+      if (parsedSteps.length === 0) return false;
+      const locatorInstance = constructLocator(page, parsedSteps);
       const count = await locatorInstance.count();
       if (count === 0) {
         return false;
@@ -1975,19 +2021,11 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
     let totalMatches = 0;
     for (const branchExpr of rawBranches) {
       try {
-        const sandbox = {
-          page,
-          locator: page.locator.bind(page),
-          getByRole: page.getByRole.bind(page),
-          getByText: page.getByText.bind(page),
-          getByLabel: page.getByLabel.bind(page),
-          getByPlaceholder: page.getByPlaceholder.bind(page),
-          getByAltText: page.getByAltText.bind(page),
-          getByTitle: page.getByTitle.bind(page),
-          getByTestId: page.getByTestId.bind(page)
-        };
-        const ctx = vm.createContext(sandbox);
-        const locatorInstance = vm.runInContext(branchExpr, ctx);
+        const parsedSteps = parseLocator(branchExpr);
+        if (parsedSteps.length === 0) {
+          throw new Error("Branch expression contains no steps.");
+        }
+        const locatorInstance = constructLocator(page, parsedSteps);
         const count = await locatorInstance.count();
         totalMatches += count;
         branches.push({ locatorStr: branchExpr, matchCount: count, isWinner: false });
@@ -2064,19 +2102,11 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
           await this.ensureAgentInjected(page);
         } catch {
         }
-        const sandbox = {
-          page,
-          locator: page.locator.bind(page),
-          getByRole: page.getByRole.bind(page),
-          getByText: page.getByText.bind(page),
-          getByLabel: page.getByLabel.bind(page),
-          getByPlaceholder: page.getByPlaceholder.bind(page),
-          getByAltText: page.getByAltText.bind(page),
-          getByTitle: page.getByTitle.bind(page),
-          getByTestId: page.getByTestId.bind(page)
-        };
-        const ctx = vm.createContext(sandbox);
-        const locatorInstance = vm.runInContext(locatorStr, ctx);
+        const parsedSteps = parseLocator(locatorStr);
+        if (parsedSteps.length === 0) {
+          throw new Error("Locator expression contains no steps.");
+        }
+        const locatorInstance = constructLocator(page, parsedSteps);
         const count = await locatorInstance.count();
         const found = count > 0;
         if (found) foundCount++;
@@ -2096,19 +2126,9 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
     if (!page) return false;
     try {
       await this.ensureAgentInjected(page);
-      const sandbox = {
-        page,
-        locator: page.locator.bind(page),
-        getByRole: page.getByRole.bind(page),
-        getByText: page.getByText.bind(page),
-        getByLabel: page.getByLabel.bind(page),
-        getByPlaceholder: page.getByPlaceholder.bind(page),
-        getByAltText: page.getByAltText.bind(page),
-        getByTitle: page.getByTitle.bind(page),
-        getByTestId: page.getByTestId.bind(page)
-      };
-      const context = vm.createContext(sandbox);
-      const locatorInstance = vm.runInContext(locatorStr, context);
+      const parsedSteps = parseLocator(locatorStr);
+      if (parsedSteps.length === 0) return false;
+      const locatorInstance = constructLocator(page, parsedSteps);
       const handle = await locatorInstance.elementHandle();
       if (!handle) return false;
       return await page.evaluate(([el, val]) => {
@@ -2124,19 +2144,9 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
     if (!page) return false;
     try {
       await this.ensureAgentInjected(page);
-      const sandbox = {
-        page,
-        locator: page.locator.bind(page),
-        getByRole: page.getByRole.bind(page),
-        getByText: page.getByText.bind(page),
-        getByLabel: page.getByLabel.bind(page),
-        getByPlaceholder: page.getByPlaceholder.bind(page),
-        getByAltText: page.getByAltText.bind(page),
-        getByTitle: page.getByTitle.bind(page),
-        getByTestId: page.getByTestId.bind(page)
-      };
-      const context = vm.createContext(sandbox);
-      const locatorInstance = vm.runInContext(locatorStr, context);
+      const parsedSteps = parseLocator(locatorStr);
+      if (parsedSteps.length === 0) return false;
+      const locatorInstance = constructLocator(page, parsedSteps);
       const handle = await locatorInstance.elementHandle();
       if (!handle) return false;
       return await page.evaluate(([el, clickX, clickY]) => {
@@ -2170,19 +2180,11 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
         }
         for (const locatorStr of locatorStrs) {
           try {
-            const sandbox = {
-              page,
-              locator: page.locator.bind(page),
-              getByRole: page.getByRole.bind(page),
-              getByText: page.getByText.bind(page),
-              getByLabel: page.getByLabel.bind(page),
-              getByPlaceholder: page.getByPlaceholder.bind(page),
-              getByAltText: page.getByAltText.bind(page),
-              getByTitle: page.getByTitle.bind(page),
-              getByTestId: page.getByTestId.bind(page)
-            };
-            const ctx = vm.createContext(sandbox);
-            const locatorInstance = vm.runInContext(locatorStr, ctx);
+            const parsedSteps = parseLocator(locatorStr);
+            if (parsedSteps.length === 0) {
+              throw new Error("Locator expression contains no steps.");
+            }
+            const locatorInstance = constructLocator(page, parsedSteps);
             const count = await locatorInstance.count();
             const found = count > 0;
             if (found) {
@@ -2615,19 +2617,11 @@ export class UIAutomationSDK {
       const step = steps[idx];
       const nextLocatorStr = `${currentLocatorStr}.${stringifyLocator([step], false)}`;
       try {
-        const sandbox = {
-          page,
-          locator: page.locator.bind(page),
-          getByRole: page.getByRole.bind(page),
-          getByText: page.getByText.bind(page),
-          getByLabel: page.getByLabel.bind(page),
-          getByPlaceholder: page.getByPlaceholder.bind(page),
-          getByAltText: page.getByAltText.bind(page),
-          getByTitle: page.getByTitle.bind(page),
-          getByTestId: page.getByTestId.bind(page)
-        };
-        const context = vm.createContext(sandbox);
-        const currentLocator = vm.runInContext(nextLocatorStr, context);
+        const parsedSteps = parseLocator(nextLocatorStr);
+        if (parsedSteps.length === 0) {
+          throw new Error("Locator expression contains no steps.");
+        }
+        const currentLocator = constructLocator(page, parsedSteps);
         const count = await currentLocator.count();
         if (count > 0) {
           analysisSteps.push({
@@ -2997,7 +2991,7 @@ export class UIAutomationSDK {
             return results.slice(0, 5);
           }, expectedRole);
           if (allRoleElements.length > 0) {
-            message = `No elements with role "${expectedRole}" found \u2014 but similar elements exist.`;
+            message = `Role "${expectedRole}" exists, but accessible name did not match.`;
             allRoleElements.forEach((item) => {
               if (item.accessibleName) {
                 suggestions.push({
@@ -3078,6 +3072,21 @@ async function waitForCDP(port, timeoutMs = 15e3) {
   }
   throw new Error(`CDP server did not start on port ${port} within ${timeoutMs}ms.`);
 }
+async function rmWithRetry(dirPath, maxAttempts = 3, delayMs = 200) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (fs.existsSync(dirPath)) {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      }
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
 var SidebarProvider = class {
   constructor(_extensionUri) {
     this._extensionUri = _extensionUri;
@@ -3105,6 +3114,9 @@ var SidebarProvider = class {
               const port = config.get("debuggingPort", 9222);
               const customPath = config.get("browserPath", "");
               const cleanProfile = config.get("cleanBrowserProfile", false);
+              if (typeof port !== "number" || isNaN(port) || port < 1024 || port > 65535) {
+                throw new Error(`Invalid debugging port: ${port}. Must be a number between 1024 and 65535.`);
+              }
               const executablePath = customPath || findChrome();
               if (!fs.existsSync(executablePath)) {
                 throw new Error(`Browser executable not found at: ${executablePath}`);
@@ -3138,19 +3150,22 @@ var SidebarProvider = class {
                 stdio: "ignore"
               });
               this.spawnedBrowser.unref();
-              this.spawnedBrowser.on("exit", () => {
+              this.spawnedBrowser.on("exit", async () => {
                 this.spawnedBrowser = void 0;
                 if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
                   try {
-                    fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+                    await rmWithRetry(this.tempProfileDir);
                   } catch (e) {
                     console.error("Failed to clean browser profile:", e);
                   }
                 }
-                webviewView.webview.postMessage({
-                  type: "connect-status",
-                  connected: false
-                });
+                try {
+                  webviewView.webview.postMessage({
+                    type: "connect-status",
+                    connected: false
+                  });
+                } catch {
+                }
               });
               await waitForCDP(port);
               const cdpUrl = `http://127.0.0.1:${port}`;
@@ -3175,6 +3190,20 @@ var SidebarProvider = class {
           }
           case "connect-browser": {
             try {
+              if (!data.cdpUrl || typeof data.cdpUrl !== "string") {
+                throw new Error("CDP Connection URL is required.");
+              }
+              const parsedUrl = new URL(data.cdpUrl);
+              if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+                throw new Error("CDP Connection URL protocol must be http or https.");
+              }
+              const hostPort = parsedUrl.port;
+              if (hostPort) {
+                const portNum = parseInt(hostPort, 10);
+                if (isNaN(portNum) || portNum < 1024 || portNum > 65535) {
+                  throw new Error(`Invalid port in CDP URL: ${hostPort}. Must be between 1024 and 65535.`);
+                }
+              }
               const pages = await this.engine.connect(data.cdpUrl);
               const activePageId = (_b = pages[0]) == null ? void 0 : _b.id;
               this.activePageId = activePageId;
@@ -3217,7 +3246,7 @@ var SidebarProvider = class {
             const cleanProfile = config.get("cleanBrowserProfile", false);
             if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
               try {
-                fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
+                await rmWithRetry(this.tempProfileDir);
               } catch {
               }
             }
@@ -3465,23 +3494,7 @@ var SidebarProvider = class {
     });
     webviewView.onDidDispose(() => {
       configChangeDisposable.dispose();
-      if (this.spawnedBrowser) {
-        try {
-          this.spawnedBrowser.kill();
-        } catch {
-        }
-        this.spawnedBrowser = void 0;
-      }
-      const config = vscode.workspace.getConfiguration("playwright-locator-lens");
-      const cleanProfile = config.get("cleanBrowserProfile", false);
-      if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
-        try {
-          fs.rmSync(this.tempProfileDir, { recursive: true, force: true });
-        } catch (e) {
-          console.error("Failed to clean browser profile on dispose:", e);
-        }
-      }
-      this.engine.disconnect();
+      this.engine.softDisconnect();
     });
   }
   _getHtmlForWebview(webview) {
@@ -3490,9 +3503,11 @@ var SidebarProvider = class {
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "webview", "style.css"));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "webview", "main.js"));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "icon.png"));
+    const cspSource = webview.cspSource;
     html = html.replace(/\$\{styleUri\}/g, styleUri.toString());
     html = html.replace(/\$\{scriptUri\}/g, scriptUri.toString());
     html = html.replace(/\$\{logoUri\}/g, logoUri.toString());
+    html = html.replace(/\$\{cspSource\}/g, cspSource);
     return html;
   }
 };

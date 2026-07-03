@@ -1,18 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script>
+    window.acquireVsCodeApi = () => {
+      return {
+        postMessage: (msg) => {
+          window.parent.postMessage({ fromWebview: true, data: msg }, '*');
+        }
+      };
+    };
+  </script>
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource}; img-src ${cspSource} https: data:; connect-src ${cspSource} http: https: ws: wss:;">
   <title>Playwright Locator Lens</title>
-  <link rel="stylesheet" href="${styleUri}">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="app-container">
     <!-- Header -->
     <header class="app-header">
       <div class="logo">
-        <img src="${logoUri}" alt="Logo" class="logo-image">
+        <img src="../icon.png" alt="Logo" class="logo-image">
         <span class="gradient-text">Locator Lens</span>
       </div>
     </header>
@@ -384,6 +394,6 @@
 
 
   </div>
-  <script src="${scriptUri}"></script>
+  <script src="main.js"></script>
 </body>
 </html>

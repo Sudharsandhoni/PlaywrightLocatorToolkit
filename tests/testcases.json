@@ -1,0 +1,120 @@
+{
+  "playground": [
+    {
+      "name": "getByTestId success",
+      "locatorStr": "getByTestId('login-submit')",
+      "expectedSuccess": true,
+      "expectedCount": 1,
+      "minConfidence": 90,
+      "expectedFactors": ["Uses stable data-testid locator", "Single unique match"]
+    },
+    {
+      "name": "getByLabel success",
+      "locatorStr": "getByLabel('Username')",
+      "expectedSuccess": true,
+      "expectedCount": 1,
+      "minConfidence": 90,
+      "expectedFactors": ["Uses getByLabel standard form query", "Single unique match"]
+    },
+    {
+      "name": "getByRole with name success",
+      "locatorStr": "getByRole('button', { name: 'Sign In' })",
+      "expectedSuccess": true,
+      "expectedCount": 1,
+      "minConfidence": 90,
+      "expectedFactors": ["Uses getByRole with accessible name filter", "Single unique match"]
+    },
+    {
+      "name": "getByRole multi-match penalty",
+      "locatorStr": "getByRole('button', { name: 'Delete' })",
+      "expectedSuccess": true,
+      "expectedCount": 2,
+      "maxConfidence": 85,
+      "expectedFactors": ["Multiple matches found (2)"]
+    },
+    {
+      "name": "CSS locator index penalty",
+      "locatorStr": "locator('.delete-action-btn').first()",
+      "expectedSuccess": true,
+      "expectedCount": 1,
+      "maxConfidence": 50,
+      "expectedFactors": ["Uses index filters"]
+    },
+    {
+      "name": "Dynamic ID penalty",
+      "locatorStr": "locator('#mui-48172')",
+      "expectedSuccess": true,
+      "expectedCount": 1,
+      "maxConfidence": 65,
+      "expectedFactors": ["Uses generated/dynamic element ID"]
+    }
+  ],
+  "failureAnalysis": [
+    {
+      "name": "Role name mismatch diagnostic",
+      "locatorStr": "getByRole('button', { name: 'Sign Out' })",
+      "expectedSuccess": true,
+      "expectedCount": 0,
+      "expectedDiagnosticMessage": "Role \"button\" exists, but accessible name did not match.",
+      "expectedAlternative": "getByRole('button', { name: 'Sign In' })"
+    },
+    {
+      "name": "TestId mismatch diagnostic",
+      "locatorStr": "getByTestId('signin-btn')",
+      "expectedSuccess": true,
+      "expectedCount": 0,
+      "expectedDiagnosticMessage": "Test ID \"signin-btn\" not found on page. Available test IDs:",
+      "expectedAlternative": "getByTestId('login-submit')"
+    },
+    {
+      "name": "Chaining break step diagnostic",
+      "locatorStr": "getByLabel('Username').filter({ hasText: 'InvalidUser' })",
+      "expectedSuccess": true,
+      "expectedCount": 0,
+      "expectedFailedStepIndex": 1
+    }
+  ],
+  "orChains": [
+    {
+      "name": "OR chain branch evaluation",
+      "locatorStr": "locator('input[type=\"submit\"]').or(locator('button.submit-action-btn'))",
+      "expectedTotalMatches": 1,
+      "expectedBranches": [
+        { "matchCount": 0, "isWinner": false },
+        { "matchCount": 1, "isWinner": true }
+      ]
+    }
+  ],
+  "simulations": [
+    {
+      "name": "Simulate fill username",
+      "locatorStr": "getByLabel('Username')",
+      "action": "fill",
+      "value": "alice_test"
+    },
+    {
+      "name": "Simulate click login submit",
+      "locatorStr": "getByTestId('login-submit')",
+      "action": "click"
+    }
+  ],
+  "stability": [
+    {
+      "name": "Stable form field locator",
+      "locatorStr": "getByLabel('Email Address')",
+      "expectedScore": 100
+    }
+  ],
+  "security": [
+    {
+      "name": "Block VM breakout exploit attempt",
+      "locatorStr": "page.constructor.constructor('return process.mainModule.require(\"child_process\")')()",
+      "expectedSuccess": false
+    },
+    {
+      "name": "Block unauthorized method call",
+      "locatorStr": "page.eval('1+1')",
+      "expectedSuccess": false
+    }
+  ]
+}
