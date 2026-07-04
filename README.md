@@ -120,6 +120,8 @@ Configure settings inside VS Code (`settings.json`):
 
 ## 🎬 Demonstration Video
 
-Below is a recording showing Playwright locators highlighting matching elements
+Below is a recording showing Playwright locators highlighting matching elements:
 
-[▶ Watch Demo](./PlaywrightLocatorLens_Demo_30s.mp4)
+![Playwright Locator Lens Demo](./PlaywrightLocatorLens_Demo.gif)
+
+[▶ Watch Video](./PlaywrightLocatorLens_Demo_30s.mp4)
