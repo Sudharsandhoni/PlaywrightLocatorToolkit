@@ -118,27 +118,8 @@ Configure settings inside VS Code (`settings.json`):
 * `playwright-locator-lens.enableBetaFeatures`: Toggle (default: `false`) to display advanced actions like Stability Testing, Action Simulation, and POM Code Export.
 * `playwright-locator-lens.cleanBrowserProfile`: Toggle (default: `false`) to clean up the temporary Chrome profile folder upon exit.
 
----
-
-## 💻 Local Development
-
-1. Clone the repository and install dependencies:
-   ```bash
-   npm install
-   ```
-2. Build all packages:
-   ```bash
-   npm run build
-   ```
-3. Run the extension:
-   - Open the workspace in VS Code.
-   - Press `F5` to open the **Extension Development Host**.
-   - Open the sidebar panel to launch Chrome and start writing locators!
-
----
-
 ## 🎬 Demonstration Video
 
-Below is a recording showing Playwright locators highlighting matching elements and executing actions on a sample authentication web page:
+Below is a recording showing Playwright locators highlighting matching elements
 
-<video src="PlaywrightLocatorLens_Demo_30s.mp4" width="100%" controls autoplay loop muted></video>
+[▶ Watch Demo](./PlaywrightLocatorLens_Demo_30s.mp4)
