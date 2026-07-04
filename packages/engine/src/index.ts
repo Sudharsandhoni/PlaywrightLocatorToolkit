@@ -1,6 +1,6 @@
 import { chromium, Browser, Page, Locator } from 'playwright-core';
-import { parseLocator, stringifyLocator, LocatorStep } from 'playwright-locator-lens-parser';
-import { AGENT_SCRIPT } from 'playwright-locator-lens-agent';
+import { parseLocator, stringifyLocator, LocatorStep } from 'playwright-locator-toolkit-parser';
+import { AGENT_SCRIPT } from 'playwright-locator-toolkit-agent';
 
 const ALLOWED_LOCATOR_METHODS = new Set([
   'locator',
@@ -71,7 +71,7 @@ import {
   AccessibilityIssue,
   LocatorHealthReport,
   AutomationReadinessScore
-} from 'playwright-locator-lens-shared';
+} from 'playwright-locator-toolkit-shared';
 
 function toCamelCase(str: string): string {
   const parts = str.split(/[^a-zA-Z0-9]+|(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).filter(Boolean);

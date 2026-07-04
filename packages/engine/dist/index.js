@@ -2,8 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocatorEngine = void 0;
 const playwright_core_1 = require("playwright-core");
-const playwright_locator_lens_parser_1 = require("playwright-locator-lens-parser");
-const playwright_locator_lens_agent_1 = require("playwright-locator-lens-agent");
+const playwright_locator_toolkit_parser_1 = require("playwright-locator-toolkit-parser");
+const playwright_locator_toolkit_agent_1 = require("playwright-locator-toolkit-agent");
 const ALLOWED_LOCATOR_METHODS = new Set([
     'locator',
     'getByRole',
@@ -172,7 +172,7 @@ class LocatorEngine {
         try {
             const isInjected = await page.evaluate(() => typeof window.__locatorLensAgent !== 'undefined');
             if (!isInjected) {
-                await page.evaluate(playwright_locator_lens_agent_1.AGENT_SCRIPT);
+                await page.evaluate(playwright_locator_toolkit_agent_1.AGENT_SCRIPT);
             }
         }
         catch (err) {
@@ -224,7 +224,7 @@ class LocatorEngine {
         }
         let parsedSteps = [];
         try {
-            parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
         }
         catch (err) {
             // Provide a more helpful error for .or without parentheses
@@ -342,7 +342,7 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
             });
             if (!locatorStr.trim())
                 return true;
-            const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
             if (parsedSteps.length === 0)
                 return false;
             const locatorInstance = constructLocator(page, parsedSteps);
@@ -390,7 +390,7 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
         let totalMatches = 0;
         for (const branchExpr of rawBranches) {
             try {
-                const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(branchExpr);
+                const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(branchExpr);
                 if (parsedSteps.length === 0) {
                     throw new Error('Branch expression contains no steps.');
                 }
@@ -518,7 +518,7 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
                     await this.ensureAgentInjected(page);
                 }
                 catch { /* best effort */ }
-                const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+                const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
                 if (parsedSteps.length === 0) {
                     throw new Error('Locator expression contains no steps.');
                 }
@@ -545,7 +545,7 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
             return false;
         try {
             await this.ensureAgentInjected(page);
-            const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
             if (parsedSteps.length === 0)
                 return false;
             const locatorInstance = constructLocator(page, parsedSteps);
@@ -567,7 +567,7 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
             return false;
         try {
             await this.ensureAgentInjected(page);
-            const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+            const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
             if (parsedSteps.length === 0)
                 return false;
             const locatorInstance = constructLocator(page, parsedSteps);
@@ -606,7 +606,7 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
                 catch { /* best effort */ }
                 for (const locatorStr of locatorStrs) {
                     try {
-                        const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(locatorStr);
+                        const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
                         if (parsedSteps.length === 0) {
                             throw new Error('Locator expression contains no steps.');
                         }
@@ -1075,9 +1075,9 @@ export class UIAutomationSDK {
         // 1. Evaluate steps sequentially to find where it breaks
         for (let idx = 0; idx < steps.length; idx++) {
             const step = steps[idx];
-            const nextLocatorStr = `${currentLocatorStr}.${(0, playwright_locator_lens_parser_1.stringifyLocator)([step], false)}`;
+            const nextLocatorStr = `${currentLocatorStr}.${(0, playwright_locator_toolkit_parser_1.stringifyLocator)([step], false)}`;
             try {
-                const parsedSteps = (0, playwright_locator_lens_parser_1.parseLocator)(nextLocatorStr);
+                const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(nextLocatorStr);
                 if (parsedSteps.length === 0) {
                     throw new Error('Locator expression contains no steps.');
                 }
@@ -1085,7 +1085,7 @@ export class UIAutomationSDK {
                 const count = await currentLocator.count();
                 if (count > 0) {
                     analysisSteps.push({
-                        stepText: (0, playwright_locator_lens_parser_1.stringifyLocator)([step], false),
+                        stepText: (0, playwright_locator_toolkit_parser_1.stringifyLocator)([step], false),
                         success: true,
                         matchCount: count
                     });
@@ -1095,10 +1095,10 @@ export class UIAutomationSDK {
                 else {
                     failedStepIndex = idx;
                     analysisSteps.push({
-                        stepText: (0, playwright_locator_lens_parser_1.stringifyLocator)([step], false),
+                        stepText: (0, playwright_locator_toolkit_parser_1.stringifyLocator)([step], false),
                         success: false,
                         matchCount: 0,
-                        reason: `Locator resolved to 0 elements at step: ${(0, playwright_locator_lens_parser_1.stringifyLocator)([step], false)}`
+                        reason: `Locator resolved to 0 elements at step: ${(0, playwright_locator_toolkit_parser_1.stringifyLocator)([step], false)}`
                     });
                     break;
                 }
@@ -1106,7 +1106,7 @@ export class UIAutomationSDK {
             catch (err) {
                 failedStepIndex = idx;
                 analysisSteps.push({
-                    stepText: (0, playwright_locator_lens_parser_1.stringifyLocator)([step], false),
+                    stepText: (0, playwright_locator_toolkit_parser_1.stringifyLocator)([step], false),
                     success: false,
                     matchCount: 0,
                     reason: `Evaluation failed: ${err.message}`

@@ -1,5 +1,5 @@
 {
-  "name": "playwright-locator-lens-engine",
+  "name": "playwright-locator-toolkit-engine",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",
@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "playwright-core": "^1.40.0",
-    "playwright-locator-lens-shared": "file:../shared",
-    "playwright-locator-lens-parser": "file:../locator-parser",
-    "playwright-locator-lens-agent": "file:../browser-agent"
+    "playwright-locator-toolkit-shared": "file:../shared",
+    "playwright-locator-toolkit-parser": "file:../locator-parser",
+    "playwright-locator-toolkit-agent": "file:../browser-agent"
   }
 }

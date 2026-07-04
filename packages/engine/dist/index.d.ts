@@ -1,5 +1,5 @@
 import { Page } from 'playwright-core';
-import { EvaluationResult, PageInfo, ChainAnalysisResult, StabilityResult, FormStructure, UiNode, UiScannerResult } from 'playwright-locator-lens-shared';
+import { EvaluationResult, PageInfo, ChainAnalysisResult, StabilityResult, FormStructure, UiNode, UiScannerResult } from 'playwright-locator-toolkit-shared';
 export declare class LocatorEngine {
     private browser;
     private pages;

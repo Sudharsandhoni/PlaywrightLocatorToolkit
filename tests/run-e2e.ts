@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { chromium } from 'playwright-core';
-import { LocatorEngine } from 'playwright-locator-lens-engine';
+import { LocatorEngine } from 'playwright-locator-toolkit-engine';
 
 interface TestCase {
   name: string;
@@ -73,7 +73,7 @@ function findChrome(): string {
 
 async function runTests() {
   console.log('==================================================');
-  console.log('🚀 Starting Playwright Locator Lens E2E Test Suite');
+  console.log('🚀 Starting Playwright Locator Toolkit E2E Test Suite');
   console.log('==================================================\n');
 
   // Load test cases

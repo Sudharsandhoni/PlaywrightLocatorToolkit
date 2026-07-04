@@ -1,5 +1,5 @@
 {
-  "name": "playwright-locator-lens",
+  "name": "playwright-locator-toolkit",
   "version": "0.1.0",
   "private": true,
   "description": "Live Playwright Locator Validation & Analysis VSCode Extension",

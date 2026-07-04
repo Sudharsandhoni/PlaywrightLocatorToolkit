@@ -12,10 +12,10 @@
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "playwright-locator-lens-shared": ["packages/shared/src/index.ts"],
-      "playwright-locator-lens-parser": ["packages/locator-parser/src/index.ts"],
-      "playwright-locator-lens-agent": ["packages/browser-agent/src/index.ts"],
-      "playwright-locator-lens-engine": ["packages/engine/src/index.ts"]
+      "playwright-locator-toolkit-shared": ["packages/shared/src/index.ts"],
+      "playwright-locator-toolkit-parser": ["packages/locator-parser/src/index.ts"],
+      "playwright-locator-toolkit-agent": ["packages/browser-agent/src/index.ts"],
+      "playwright-locator-toolkit-engine": ["packages/engine/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "dist"]

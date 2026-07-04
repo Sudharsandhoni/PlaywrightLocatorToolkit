@@ -6,7 +6,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
-      'playwright-locator-lens-sidebar',
+      'playwright-locator-toolkit-sidebar',
       sidebarProvider,
       {
         webviewOptions: {
@@ -18,8 +18,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command to focus sidebar
   context.subscriptions.push(
-    vscode.commands.registerCommand('playwright-locator-lens.focusSidebar', () => {
-      vscode.commands.executeCommand('workbench.view.extension.playwright-locator-lens-container');
+    vscode.commands.registerCommand('playwright-locator-toolkit.focusSidebar', () => {
+      vscode.commands.executeCommand('workbench.view.extension.playwright-locator-toolkit-container');
     })
   );
 }

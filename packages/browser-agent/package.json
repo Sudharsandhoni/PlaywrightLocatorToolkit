@@ -1,5 +1,5 @@
 {
-  "name": "playwright-locator-lens-agent",
+  "name": "playwright-locator-toolkit-agent",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",

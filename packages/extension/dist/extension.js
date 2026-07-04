@@ -3145,7 +3145,7 @@ var SidebarProvider = class {
         switch (data.type) {
           case "launch-browser": {
             try {
-              const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+              const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
               const port = config.get("debuggingPort", 9222);
               const customPath = config.get("browserPath", "");
               const cleanProfile = config.get("cleanBrowserProfile", false);
@@ -3277,7 +3277,7 @@ var SidebarProvider = class {
             }
             await this.engine.disconnect();
             this.activePageId = void 0;
-            const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+            const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
             const cleanProfile = config.get("cleanBrowserProfile", false);
             if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
               try {
@@ -3489,7 +3489,7 @@ var SidebarProvider = class {
             break;
           }
           case "get-config": {
-            const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+            const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
             const enableBeta = config.get("enableBetaFeatures", false);
             webviewView.webview.postMessage({
               type: "beta-config",
@@ -3518,8 +3518,8 @@ var SidebarProvider = class {
       }
     });
     const configChangeDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("playwright-locator-lens.enableBetaFeatures")) {
-        const config = vscode.workspace.getConfiguration("playwright-locator-lens");
+      if (e.affectsConfiguration("playwright-locator-toolkit.enableBetaFeatures")) {
+        const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
         const enableBeta = config.get("enableBetaFeatures", false);
         webviewView.webview.postMessage({
           type: "beta-config",
@@ -3552,7 +3552,7 @@ function activate(context) {
   const sidebarProvider = new SidebarProvider(context.extensionUri);
   context.subscriptions.push(
     vscode2.window.registerWebviewViewProvider(
-      "playwright-locator-lens-sidebar",
+      "playwright-locator-toolkit-sidebar",
       sidebarProvider,
       {
         webviewOptions: {
@@ -3562,8 +3562,8 @@ function activate(context) {
     )
   );
   context.subscriptions.push(
-    vscode2.commands.registerCommand("playwright-locator-lens.focusSidebar", () => {
-      vscode2.commands.executeCommand("workbench.view.extension.playwright-locator-lens-container");
+    vscode2.commands.registerCommand("playwright-locator-toolkit.focusSidebar", () => {
+      vscode2.commands.executeCommand("workbench.view.extension.playwright-locator-toolkit-container");
     })
   );
 }

@@ -35,7 +35,7 @@ const sandboxHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Playwright Locator Lens - Demo Sandbox</title>
+  <title>Playwright Locator Toolkit - Demo Sandbox</title>
   <style>
     body {
       margin: 0;
@@ -192,7 +192,7 @@ const sandboxHtml = `<!DOCTYPE html>
               connected: true,
               activePageId: 'page-test',
               pages: [
-                { id: 'page-test', title: 'Playwright Locator Lens Test Page', url: 'file:///D:/learning/PlaywrightLocatorLens/tests/testpage.html' }
+                { id: 'page-test', title: 'Playwright Locator Toolkit Test Page', url: 'file:///D:/learning/PlaywrightLocatorLens/tests/testpage.html' }
               ]
             });
           }, 800);

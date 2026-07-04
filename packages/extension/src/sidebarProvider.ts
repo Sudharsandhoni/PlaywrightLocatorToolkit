@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
 import * as http from 'http';
-import { LocatorEngine } from 'playwright-locator-lens-engine';
+import { LocatorEngine } from 'playwright-locator-toolkit-engine';
 
 function findChrome(): string {
   const platform = process.platform;
@@ -109,7 +109,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         switch (data.type) {
           case 'launch-browser': {
             try {
-              const config = vscode.workspace.getConfiguration('playwright-locator-lens');
+              const config = vscode.workspace.getConfiguration('playwright-locator-toolkit');
               const port = config.get<number>('debuggingPort', 9222);
               const customPath = config.get<string>('browserPath', '');
               const cleanProfile = config.get<boolean>('cleanBrowserProfile', false);
@@ -249,7 +249,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             await this.engine.disconnect();
             this.activePageId = undefined;
 
-            const config = vscode.workspace.getConfiguration('playwright-locator-lens');
+            const config = vscode.workspace.getConfiguration('playwright-locator-toolkit');
             const cleanProfile = config.get<boolean>('cleanBrowserProfile', false);
             if (cleanProfile && this.tempProfileDir && fs.existsSync(this.tempProfileDir)) {
               try {
@@ -469,7 +469,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             break;
           }
           case 'get-config': {
-            const config = vscode.workspace.getConfiguration('playwright-locator-lens');
+            const config = vscode.workspace.getConfiguration('playwright-locator-toolkit');
             const enableBeta = config.get<boolean>('enableBetaFeatures', false);
             webviewView.webview.postMessage({
               type: 'beta-config',
@@ -501,8 +501,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     // Listen for configuration changes
     const configChangeDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('playwright-locator-lens.enableBetaFeatures')) {
-        const config = vscode.workspace.getConfiguration('playwright-locator-lens');
+      if (e.affectsConfiguration('playwright-locator-toolkit.enableBetaFeatures')) {
+        const config = vscode.workspace.getConfiguration('playwright-locator-toolkit');
         const enableBeta = config.get<boolean>('enableBetaFeatures', false);
         webviewView.webview.postMessage({
           type: 'beta-config',

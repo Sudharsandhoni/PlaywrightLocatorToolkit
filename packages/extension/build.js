@@ -16,10 +16,10 @@ async function main() {
     sourcemap: true,
     minify: false,
     alias: {
-      'playwright-locator-lens-shared': path.resolve(__dirname, '../shared/src/index.ts'),
-      'playwright-locator-lens-parser': path.resolve(__dirname, '../locator-parser/src/index.ts'),
-      'playwright-locator-lens-agent': path.resolve(__dirname, '../browser-agent/src/index.ts'),
-      'playwright-locator-lens-engine': path.resolve(__dirname, '../engine/src/index.ts')
+      'playwright-locator-toolkit-shared': path.resolve(__dirname, '../shared/src/index.ts'),
+      'playwright-locator-toolkit-parser': path.resolve(__dirname, '../locator-parser/src/index.ts'),
+      'playwright-locator-toolkit-agent': path.resolve(__dirname, '../browser-agent/src/index.ts'),
+      'playwright-locator-toolkit-engine': path.resolve(__dirname, '../engine/src/index.ts')
     },
   });
 

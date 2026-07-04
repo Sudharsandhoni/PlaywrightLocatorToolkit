@@ -60,30 +60,6 @@ PlaywrightLocatorToolkit/
 └── README.md
 ```
 
-```mermaid
-flowchart TD
-    subgraph VS Code Extension Host
-        A[SidebarProvider] -->|Spawns Chrome| B[Local Chrome Process]
-        A -->|cdp connection| C[LocatorEngine]
-    end
-
-    subgraph Chrome Debugger CDP
-        B -->|Remote Debugger Port| D[Target Web Page]
-        C -->|Injects| E[Browser Agent Script]
-    end
-
-    subgraph Safe Programmatic Evaluation
-        C -->|Programmatic Locator Interpreter| F[Evaluate Locator String]
-        F -->|Count / Highlight| D
-        E -->|Scan Accessibility & DOM| C
-    end
-
-    subgraph Parsing & Analysis
-        F -->|If count is 0| G[Locator Parser]
-        G -->|Step AST| H[Failure Diagnostic Analyser]
-    end
-```
-
 ### 1. Extension (`packages/extension`)
 Acts as the bridge between VS Code and the browser.
 * Spawns Chrome with flags: `--remote-debugging-port=9222`, `--user-data-dir=.vscode/playwright-locator-profile/`.
@@ -122,6 +98,6 @@ Configure settings inside VS Code (`settings.json`):
 
 Below is a recording showing Playwright locators highlighting matching elements:
 
-![Playwright Locator Toolkit Demo](./PlaywrightLocatorLens_Demo.gif)
+![Playwright Locator Toolkit Demo](https://raw.githubusercontent.com/Sudharsandhoni/PlaywrightLocatorToolkit/main/PlaywrightLocatorLens_Demo.gif)
 
-[▶ Watch Video](./PlaywrightLocatorLens_Demo_30s.mp4)
+[▶ Watch Video](https://raw.githubusercontent.com/Sudharsandhoni/PlaywrightLocatorToolkit/main/PlaywrightLocatorLens_Demo_30s.mp4)

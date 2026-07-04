@@ -1,9 +1,9 @@
 {
-  "name": "playwright-locator-lens",
-  "displayName": "Playwright Locator Lens",
+  "name": "playwright-locator-toolkit",
+  "displayName": "Playwright Locator Toolkit",
   "description": "Live Playwright Locator Validation & Analysis in VS Code",
   "version": "0.1.0",
-  "publisher": "playwright-tools",
+  "publisher": "sudharsan-ezhumalai",
   "icon": "icon.png",
   "engines": {
     "vscode": "^1.80.0"
@@ -18,43 +18,43 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "playwright-locator-lens-container",
-          "title": "Playwright Locator Lens",
+          "id": "playwright-locator-toolkit-container",
+          "title": "Playwright Locator Toolkit",
           "icon": "$(eye)"
         }
       ]
     },
     "views": {
-      "playwright-locator-lens-container": [
+      "playwright-locator-toolkit-container": [
         {
           "type": "webview",
-          "id": "playwright-locator-lens-sidebar",
-          "name": "Playwright Locator Lens"
+          "id": "playwright-locator-toolkit-sidebar",
+          "name": "Playwright Locator Toolkit"
         }
       ]
     },
     "configuration": {
-      "title": "Playwright Locator Lens",
+      "title": "Playwright Locator Toolkit",
       "properties": {
-        "playwright-locator-lens.browserPath": {
+        "playwright-locator-toolkit.browserPath": {
           "type": "string",
           "default": "",
           "scope": "machine",
           "description": "Optional: Custom path to Google Chrome/Chromium executable. If empty, the extension will attempt to auto-detect Google Chrome."
         },
-        "playwright-locator-lens.debuggingPort": {
+        "playwright-locator-toolkit.debuggingPort": {
           "type": "integer",
           "default": 9222,
           "minimum": 1024,
           "maximum": 65535,
           "description": "The port to use for Chrome remote debugging."
         },
-        "playwright-locator-lens.enableBetaFeatures": {
+        "playwright-locator-toolkit.enableBetaFeatures": {
           "type": "boolean",
           "default": false,
           "description": "Enable advanced beta features: Stability testing, action simulation, POM/SDK exports, etc."
         },
-        "playwright-locator-lens.cleanBrowserProfile": {
+        "playwright-locator-toolkit.cleanBrowserProfile": {
           "type": "boolean",
           "default": false,
           "description": "If true, deletes the browser's temporary user profile directory on exit. If false, persists it for fast launch."
@@ -69,14 +69,21 @@
     "build": "npm run compile",
     "package": "vsce package"
   },
-  "dependencies": {
-    "playwright-core": "^1.40.0",
-    "playwright-locator-lens-engine": "file:../engine",
-    "playwright-locator-lens-parser": "file:../locator-parser",
-    "playwright-locator-lens-shared": "file:../shared"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit.git"
   },
+  "bugs": {
+    "url": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit/issues"
+  },
+  "homepage": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit#readme",
+  "dependencies": {},
   "devDependencies": {
     "@types/vscode": "^1.80.0",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "playwright-locator-toolkit-engine": "file:../engine",
+    "playwright-locator-toolkit-parser": "file:../locator-parser",
+    "playwright-locator-toolkit-shared": "file:../shared"
   }
 }
