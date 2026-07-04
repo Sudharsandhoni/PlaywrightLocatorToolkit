@@ -1,5 +1,9 @@
 # Playwright Locator Toolkit 🔍
 
+> 🎯 **Stop guessing your Playwright locators.**
+> ⚡ **Debug Playwright locators instantly.**
+> 👀 **See what your locator actually matches.**
+
 **Playwright Locator Toolkit** is a real-time locator validation, analysis, and UI scanning tool integrated directly into VS Code as a sidebar extension. It helps automation engineers instantly write, debug, and optimize complex Playwright locators against live web pages.
 
 ---
