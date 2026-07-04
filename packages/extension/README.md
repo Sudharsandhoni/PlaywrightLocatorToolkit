@@ -98,6 +98,6 @@ Configure settings inside VS Code (`settings.json`):
 
 Below is a recording showing Playwright locators highlighting matching elements:
 
-![Playwright Locator Toolkit Demo](https://raw.githubusercontent.com/Sudharsandhoni/PlaywrightLocatorToolkit/main/PlaywrightLocatorLens_Demo.gif)
+![Playwright Locator Toolkit Demo](https://raw.githubusercontent.com/Sudharsandhoni/PlaywrightLocatorToolkit/main/PlaywrightLocatorToolkit_Demo.gif)
 
-[▶ Watch Video](https://raw.githubusercontent.com/Sudharsandhoni/PlaywrightLocatorToolkit/main/PlaywrightLocatorLens_Demo_30s.mp4)
+[▶ Watch Video](https://raw.githubusercontent.com/Sudharsandhoni/PlaywrightLocatorToolkit/main/PlaywrightLocatorToolkit_Demo.mp4)
