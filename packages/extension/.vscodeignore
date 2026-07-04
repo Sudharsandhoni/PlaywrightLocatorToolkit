@@ -4,3 +4,4 @@ tsconfig.json
 build.js
 .git/**
 .gitignore
+!node_modules/playwright-core/**

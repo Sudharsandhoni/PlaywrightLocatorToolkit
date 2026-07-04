@@ -78,7 +78,9 @@
     "url": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit/issues"
   },
   "homepage": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit#readme",
-  "dependencies": {},
+  "dependencies": {
+    "playwright-core": "^1.61.1"
+  },
   "devDependencies": {
     "@types/vscode": "^1.80.0",
     "esbuild": "^0.28.1",
