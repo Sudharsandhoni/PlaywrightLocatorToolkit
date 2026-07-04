@@ -68,7 +68,7 @@
       </div>
 
       <div class="actions-group">
-        <button id="evaluate-btn" class="btn btn-primary btn-full" disabled>Evaluate & Highlight</button>
+        <button id="evaluate-btn" class="btn btn-primary btn-full" disabled title="Connect to browser">Evaluate & Highlight</button>
         <button id="clear-hl-btn" class="btn btn-secondary" disabled title="Clear Highlights">Clear</button>
       </div>
     </section>
@@ -128,7 +128,7 @@
         <div class="card-header">
           <div style="display:flex; align-items:center; gap:6px;">
             <h3>Confidence Score</h3>
-            <span class="info-icon" title="Score for the locator you typed. Starts from the locator type's baseline (e.g. getByRole+name = 92) then adjusts for actual evaluation results: −15 if multiple elements matched, −8 if hidden, −12 if index-based. A lower score than the alternative means your locator is less unique or reliable.">ℹ</span>
+            <span class="info-icon" data-tooltip="Score for the locator you typed. Starts from the locator type's baseline (e.g. getByRole+name = 92) then adjusts for actual evaluation results: −15 if multiple elements matched, −8 if hidden, −12 if index-based. A lower score than the alternative means your locator is less unique or reliable.">ℹ</span>
           </div>
           <span class="score-badge" id="res-score-badge">0/100</span>
         </div>
@@ -157,7 +157,7 @@
         <div class="card-header">
           <div style="display:flex; align-items:center; gap:6px;">
             <h3>Alternative Recommendations</h3>
-            <span class="info-icon" title="These are alternative locators generated from the matched element's properties (role, label, placeholder, ID, etc.). Their % score is the baseline quality tier for that locator type — not adjusted for match count. Use these as better options if your evaluated locator has multiple matches.">ℹ</span>
+            <span class="info-icon" data-tooltip="These are alternative locators generated from the matched element's properties (role, label, placeholder, ID, etc.). Their % score is the baseline quality tier for that locator type — not adjusted for match count. Use these as better options if your evaluated locator has multiple matches.">ℹ</span>
           </div>
         </div>
         <div class="alternatives-list" id="res-alternatives-list">

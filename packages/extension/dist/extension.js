@@ -1745,7 +1745,7 @@ var LocatorEngine = class {
     if (this.browser) {
       await this.disconnect();
     }
-    this.browser = await import_playwright_core.chromium.connectOverCDP(cdpUrl);
+    this.browser = await import_playwright_core.chromium.connectOverCDP(cdpUrl, { timeout: 5e3 });
     this.pages.clear();
     const contexts = this.browser.contexts();
     const allPages = [];
@@ -2047,31 +2047,66 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
   splitOrChain(locatorStr) {
     const normalized = locatorStr.replace(/^\s*page\s*\.\s*/, "");
     const branches = [];
-    let depth = 0;
-    let current = "";
     let i = 0;
+    let current = "";
+    let parenDepth = 0;
+    let inQuote = null;
+    let isEscaped = false;
+    let insideOr = false;
     while (i < normalized.length) {
-      if (depth === 0 && normalized[i] === "." && normalized.slice(i, i + 4) === ".or(") {
+      const char = normalized[i];
+      if (isEscaped) {
+        current += char;
+        isEscaped = false;
+        i++;
+        continue;
+      }
+      if (char === "\\") {
+        current += char;
+        isEscaped = true;
+        i++;
+        continue;
+      }
+      if (inQuote) {
+        if (char === inQuote) {
+          inQuote = null;
+        }
+        current += char;
+        i++;
+        continue;
+      }
+      if (char === "'" || char === '"' || char === "`") {
+        inQuote = char;
+        current += char;
+        i++;
+        continue;
+      }
+      if (!insideOr && parenDepth === 0 && char === "." && normalized.slice(i, i + 4) === ".or(") {
         if (current.trim()) {
           branches.push(current.trim());
         }
         current = "";
         i += 4;
-        depth = 1;
+        insideOr = true;
+        parenDepth = 1;
         continue;
       }
-      if (normalized[i] === "(") depth++;
-      else if (normalized[i] === ")") {
-        if (depth === 1 && current !== "") {
-          depth = 0;
-          branches.push(current.trim());
+      if (char === "(") {
+        parenDepth++;
+      } else if (char === ")") {
+        if (insideOr && parenDepth === 1) {
+          insideOr = false;
+          parenDepth = 0;
+          if (current.trim()) {
+            branches.push(current.trim());
+          }
           current = "";
           i++;
           continue;
         }
-        depth--;
+        parenDepth = Math.max(0, parenDepth - 1);
       }
-      current += normalized[i];
+      current += char;
       i++;
     }
     if (current.trim()) {
@@ -2689,7 +2724,7 @@ export class UIAutomationSDK {
                 if (expectedName && typeof expectedName === "string") {
                   const cleanedExpected = expectedName.trim().toLowerCase();
                   const cleanedActual = item.accessibleName.trim().toLowerCase();
-                  if (cleanedActual.includes(cleanedExpected)) {
+                  if (cleanedActual.includes(cleanedExpected) && cleanedActual !== cleanedExpected) {
                     suggestions.push({
                       selector: `${currentLocatorStr}.getByRole('${expectedRole}', { name: /${expectedName}/i })`,
                       type: "getByRole",
@@ -3183,7 +3218,7 @@ var SidebarProvider = class {
               webviewView.webview.postMessage({
                 type: "connect-status",
                 connected: false,
-                error: err.message
+                error: err.message || String(err)
               });
             }
             break;
@@ -3218,7 +3253,7 @@ var SidebarProvider = class {
               webviewView.webview.postMessage({
                 type: "connect-status",
                 connected: false,
-                error: err.message
+                error: err.message || String(err)
               });
             }
             break;

@@ -115,7 +115,7 @@ export class LocatorEngine {
       await this.disconnect();
     }
 
-    this.browser = await chromium.connectOverCDP(cdpUrl);
+    this.browser = await chromium.connectOverCDP(cdpUrl, { timeout: 5000 });
     this.pages.clear();
 
     const contexts = this.browser.contexts();
@@ -464,15 +464,52 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
     const normalized = locatorStr.replace(/^\s*page\s*\.\s*/, '');
 
     const branches: string[] = [];
-    let depth = 0;
-    let current = '';
     let i = 0;
+    let current = '';
+    let parenDepth = 0;
+    let inQuote: string | null = null;
+    let isEscaped = false;
+    let insideOr = false;
 
     while (i < normalized.length) {
-      // Check for ".or(" pattern at depth 0
+      const char = normalized[i];
+
+      if (isEscaped) {
+        current += char;
+        isEscaped = false;
+        i++;
+        continue;
+      }
+
+      if (char === '\\') {
+        current += char;
+        isEscaped = true;
+        i++;
+        continue;
+      }
+
+      // Handle quotes
+      if (inQuote) {
+        if (char === inQuote) {
+          inQuote = null;
+        }
+        current += char;
+        i++;
+        continue;
+      }
+
+      if (char === "'" || char === '"' || char === '`') {
+        inQuote = char;
+        current += char;
+        i++;
+        continue;
+      }
+
+      // Check for ".or(" pattern
       if (
-        depth === 0 &&
-        normalized[i] === '.' &&
+        !insideOr &&
+        parenDepth === 0 &&
+        char === '.' &&
         normalized.slice(i, i + 4) === '.or('
       ) {
         if (current.trim()) {
@@ -480,24 +517,29 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
         }
         current = '';
         i += 4; // skip ".or("
-        depth = 1; // we are now inside the or( ... )
+        insideOr = true;
+        parenDepth = 1; // we enter the .or( ... )
         continue;
       }
 
-      if (normalized[i] === '(') depth++;
-      else if (normalized[i] === ')') {
-        if (depth === 1 && current !== '') {
-          // closing the top-level or(
-          depth = 0;
-          branches.push(current.trim());
+      if (char === '(') {
+        parenDepth++;
+      } else if (char === ')') {
+        if (insideOr && parenDepth === 1) {
+          // This is the closing parenthesis of the top-level .or(...)
+          insideOr = false;
+          parenDepth = 0;
+          if (current.trim()) {
+            branches.push(current.trim());
+          }
           current = '';
           i++;
           continue;
         }
-        depth--;
+        parenDepth = Math.max(0, parenDepth - 1);
       }
 
-      current += normalized[i];
+      current += char;
       i++;
     }
 
@@ -1239,7 +1281,7 @@ export class UIAutomationSDK {
                 if (expectedName && typeof expectedName === 'string') {
                   const cleanedExpected = expectedName.trim().toLowerCase();
                   const cleanedActual = item.accessibleName.trim().toLowerCase();
-                  if (cleanedActual.includes(cleanedExpected)) {
+                  if (cleanedActual.includes(cleanedExpected) && cleanedActual !== cleanedExpected) {
                     suggestions.push({
                       selector: `${currentLocatorStr}.getByRole('${expectedRole}', { name: /${expectedName}/i })`,
                       type: 'getByRole',

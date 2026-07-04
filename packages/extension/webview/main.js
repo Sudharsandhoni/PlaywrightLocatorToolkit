@@ -79,6 +79,7 @@
   // Initialize stacks
   undoStack.push(locatorInput.value);
   updateUndoRedoButtons();
+  updateEvaluateButtonState();
 
   // Helper to update Undo/Redo button disabled states
   function updateUndoRedoButtons() {
@@ -118,12 +119,29 @@
     }
   }
 
+  function updateEvaluateButtonState() {
+    const hasValue = locatorInput.value.trim().length > 0;
+    if (!isConnected) {
+      evaluateBtn.disabled = true;
+      evaluateBtn.title = 'Connect to browser';
+    } else {
+      evaluateBtn.disabled = !hasValue;
+      evaluateBtn.removeAttribute('title');
+    }
+    updateClearButtonState();
+  }
+
+  function updateClearButtonState() {
+    const hasValue = locatorInput.value.trim().length > 0;
+    clearHlBtn.disabled = !hasValue;
+  }
+
   // Load locator into playground
   function loadLocator(val) {
     locatorInput.value = val;
     saveState(val);
     triggerLiveHighlight(val);
-    evaluateBtn.disabled = val.trim().length === 0;
+    updateEvaluateButtonState();
   }
 
   // Add locator to history
@@ -365,7 +383,7 @@
     
     triggerLiveHighlight(locatorInput.value);
     saveState(locatorInput.value);
-    evaluateBtn.disabled = locatorInput.value.trim().length === 0;
+    updateEvaluateButtonState();
   }
 
   // Event Listeners
@@ -373,8 +391,7 @@
     const cdpUrl = cdpUrlInput.value.trim();
     if (!cdpUrl) return;
     
-    showLoader('Connecting to browser CDP...');
-    hideError();
+    setConnectionLoading(true, 'Connecting to browser CDP...');
     
     vscode.postMessage({
       type: 'connect-browser',
@@ -388,8 +405,7 @@
       const cdpUrl = cdpUrlInput.value.trim();
       if (!cdpUrl) return;
 
-      showLoader('Launching Google Chrome & connecting...');
-      hideError();
+      setConnectionLoading(true, 'Launching Google Chrome & connecting...');
 
       vscode.postMessage({
         type: 'launch-browser',
@@ -474,7 +490,7 @@
     // Clear the locator input textarea and reset results/error panels
     locatorInput.value = '';
     saveState('');
-    evaluateBtn.disabled = true;
+    updateEvaluateButtonState();
     resultsPanel.classList.add('hidden');
     errorCard.classList.add('hidden');
     failureAnalysisCard.classList.add('hidden');
@@ -489,22 +505,30 @@
   });
 
   prevBtn.addEventListener('click', () => {
-    if (currentMatchIndex > 0) {
-      currentMatchIndex--;
+    if (totalMatchCount > 1) {
+      if (currentMatchIndex > 0) {
+        currentMatchIndex--;
+      } else {
+        currentMatchIndex = totalMatchCount - 1;
+      }
       navIndex.textContent = `${currentMatchIndex + 1}/${totalMatchCount}`;
-      prevBtn.disabled = currentMatchIndex === 0;
-      nextBtn.disabled = currentMatchIndex === totalMatchCount - 1;
+      prevBtn.disabled = false;
+      nextBtn.disabled = false;
       triggerLiveHighlight(locatorInput.value, currentMatchIndex);
       renderActiveElementDetails();
     }
   });
 
   nextBtn.addEventListener('click', () => {
-    if (currentMatchIndex < totalMatchCount - 1) {
-      currentMatchIndex++;
+    if (totalMatchCount > 1) {
+      if (currentMatchIndex < totalMatchCount - 1) {
+        currentMatchIndex++;
+      } else {
+        currentMatchIndex = 0;
+      }
       navIndex.textContent = `${currentMatchIndex + 1}/${totalMatchCount}`;
-      prevBtn.disabled = currentMatchIndex === 0;
-      nextBtn.disabled = currentMatchIndex === totalMatchCount - 1;
+      prevBtn.disabled = false;
+      nextBtn.disabled = false;
       triggerLiveHighlight(locatorInput.value, currentMatchIndex);
       renderActiveElementDetails();
     }
@@ -513,7 +537,7 @@
   let saveStateTimeout;
   locatorInput.addEventListener('input', () => {
     const hasValue = locatorInput.value.trim().length > 0;
-    evaluateBtn.disabled = !isConnected || !hasValue;
+    updateEvaluateButtonState();
     
     // Show eager autocomplete popup
     showAutocomplete();
@@ -577,7 +601,7 @@
       locatorInput.value = previous;
       updateUndoRedoButtons();
       triggerLiveHighlight(previous);
-      evaluateBtn.disabled = previous.trim().length === 0;
+      updateEvaluateButtonState();
     }
   });
 
@@ -588,7 +612,7 @@
       locatorInput.value = next;
       updateUndoRedoButtons();
       triggerLiveHighlight(next);
-      evaluateBtn.disabled = next.trim().length === 0;
+      updateEvaluateButtonState();
     }
   });
 
@@ -653,7 +677,7 @@
         break;
       }
       case 'connect-status': {
-        hideLoader();
+        setConnectionLoading(false);
         if (message.connected) {
           isConnected = true;
           activePageId = message.activePageId;
@@ -667,8 +691,7 @@
           // Populate tab select dropdown (exclude DevTools pages)
           populateTabSelect(message.pages, activePageId);
 
-          evaluateBtn.disabled = locatorInput.value.trim().length === 0;
-          clearHlBtn.disabled = false;
+          updateEvaluateButtonState();
           
           // Fetch autocomplete metadata from page
           requestAutocompleteData();
@@ -686,8 +709,7 @@
           connectionInputsGroup.classList.remove('hidden');
           connectedInfo.classList.add('hidden');
           
-          evaluateBtn.disabled = true;
-          clearHlBtn.disabled = true;
+          updateEvaluateButtonState();
           resultsPanel.classList.add('hidden');
 
           // Hide Phase 7 & 8 cards on disconnect
@@ -779,7 +801,7 @@
       matchText.textContent = 'matches found (multiple)';
       matchNavigation.classList.remove('hidden');
       navIndex.textContent = `1/${totalMatchCount}`;
-      prevBtn.disabled = true;
+      prevBtn.disabled = false;
       nextBtn.disabled = false;
     } else {
       matchBanner.classList.add('failure');
@@ -1022,7 +1044,7 @@
       
       // Update playground and evaluate
       locatorInput.value = alt.selector;
-      evaluateBtn.disabled = false;
+      updateEvaluateButtonState();
       triggerEvaluation();
     });
 
@@ -1040,7 +1062,7 @@
     // Make the entire card clickable to load the selector
     div.addEventListener('click', () => {
       locatorInput.value = alt.selector;
-      evaluateBtn.disabled = false;
+      updateEvaluateButtonState();
       triggerEvaluation();
     });
 
@@ -1055,6 +1077,25 @@
 
   function hideLoader() {
     loader.classList.add('hidden');
+  }
+
+  function setConnectionLoading(loading, msg) {
+    if (loading) {
+      showLoader(msg);
+      hideError();
+      connectBtn.disabled = true;
+      cdpUrlInput.disabled = true;
+      if (launchBtn) {
+        launchBtn.disabled = true;
+      }
+    } else {
+      hideLoader();
+      connectBtn.disabled = false;
+      cdpUrlInput.disabled = false;
+      if (launchBtn) {
+        launchBtn.disabled = false;
+      }
+    }
   }
 
   // Error helpers
@@ -2365,7 +2406,7 @@
     useBtn.addEventListener('click', () => {
       if (node.locator) {
         locatorInput.value = node.locator;
-        evaluateBtn.disabled = false;
+        updateEvaluateButtonState();
         saveState(node.locator);
         triggerEvaluation();
       }
@@ -2503,7 +2544,7 @@
             e.stopPropagation();
             if (desc.locator) {
               locatorInput.value = desc.locator;
-              evaluateBtn.disabled = false;
+              updateEvaluateButtonState();
               saveState(desc.locator);
               triggerEvaluation();
             }
@@ -2603,7 +2644,7 @@
         locator.addEventListener('click', (e) => {
           e.stopPropagation();
           locatorInput.value = issue.suggestedLocator;
-          evaluateBtn.disabled = false;
+          updateEvaluateButtonState();
           saveState(issue.suggestedLocator);
           triggerEvaluation();
         });

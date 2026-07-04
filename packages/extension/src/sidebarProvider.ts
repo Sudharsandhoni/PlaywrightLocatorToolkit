@@ -189,7 +189,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               webviewView.webview.postMessage({
                 type: 'connect-status',
                 connected: false,
-                error: err.message
+                error: err.message || String(err)
               });
             }
             break;
@@ -224,7 +224,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               webviewView.webview.postMessage({
                 type: 'connect-status',
                 connected: false,
-                error: err.message
+                error: err.message || String(err)
               });
             }
             break;

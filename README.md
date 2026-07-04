@@ -141,4 +141,4 @@ Configure settings inside VS Code (`settings.json`):
 
 Below is a recording showing Playwright locators highlighting matching elements and executing actions on a sample authentication web page:
 
-![Playwright Locator Lens Action Demo](locator_lens_demo.webp)
+<video src="PlaywrightLocatorLens_Demo_30s.mp4" width="100%" controls autoplay loop muted></video>

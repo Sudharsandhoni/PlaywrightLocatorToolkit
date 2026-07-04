@@ -18,7 +18,7 @@
     },
     {
       "name": "getByRole with name success",
-      "locatorStr": "getByRole('button', { name: 'Sign In' })",
+      "locatorStr": "getByRole('button', { name: 'sign in' })",
       "expectedSuccess": true,
       "expectedCount": 1,
       "minConfidence": 90,
@@ -47,6 +47,18 @@
       "expectedCount": 1,
       "maxConfidence": 65,
       "expectedFactors": ["Uses generated/dynamic element ID"]
+    },
+    {
+      "name": "XPath locator with slash prefix",
+      "locatorStr": "locator('//button[normalize-space()=\"Sign In\"]')",
+      "expectedSuccess": true,
+      "expectedCount": 1
+    },
+    {
+      "name": "XPath locator with xpath prefix",
+      "locatorStr": "locator('xpath=//button[normalize-space()=\"Sign In\"]')",
+      "expectedSuccess": true,
+      "expectedCount": 1
     }
   ],
   "failureAnalysis": [

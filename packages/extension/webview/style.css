@@ -453,10 +453,63 @@ textarea {
   flex-shrink: 0;
   border: 1px solid rgba(99, 102, 241, 0.3);
   transition: background 0.15s;
+  position: relative;
 }
 
 .info-icon:hover {
   background: rgba(99, 102, 241, 0.35);
+}
+
+.info-icon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 135%;
+  left: -10px;
+  transform: scale(0.85);
+  transform-origin: bottom left;
+  background-color: #1e293b;
+  color: #f8fafc;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: normal;
+  width: 240px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+  z-index: 9999;
+  line-height: 1.4;
+  text-transform: none;
+  text-align: left;
+}
+
+.info-icon::before {
+  content: '';
+  position: absolute;
+  bottom: 115%;
+  left: 2px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: #1e293b transparent transparent transparent;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0.15s;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.info-icon:hover::after {
+  opacity: 1;
+  visibility: visible;
+  transform: scale(1);
+}
+
+.info-icon:hover::before {
+  opacity: 1;
+  visibility: visible;
 }
 
 .gauge-container {
