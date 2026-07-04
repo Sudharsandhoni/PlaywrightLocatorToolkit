@@ -49,3 +49,7 @@ desktop.ini
 *.tmp
 *.temp
 .cache/
+
+
+# ─── Miscellaneous ───────────────────────────────────────────────────────────
+.vscode/playwright-locator-profile
