@@ -2,7 +2,7 @@
   "name": "playwright-locator-toolkit",
   "displayName": "Playwright Locator Toolkit",
   "description": "Live Playwright Locator Validation & Analysis in VS Code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "sudharsan-ezhumalai",
   "icon": "icon.png",
   "engines": {
@@ -13,7 +13,6 @@
     "Other"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
