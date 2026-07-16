@@ -52,6 +52,75 @@
   const historyDropdown = document.getElementById('history-dropdown');
   const autocompleteList = document.getElementById('autocomplete-list');
 
+  // Main Tab Elements
+  const locatorTabContent = document.getElementById('tab-locator');
+  const pageScriptTabContent = document.getElementById('tab-page-script');
+  const workspaceSyncTabContent = document.getElementById('tab-workspace-sync');
+  
+  const locatorConnectionOverlay = document.getElementById('locator-connection-overlay');
+  const pageScriptConnectionOverlay = document.getElementById('page-script-connection-overlay');
+
+  // Interaction elements
+  const interactionCard = document.getElementById('interaction-card');
+  const interactionStatusBadge = document.getElementById('interaction-status-badge');
+  const interactToggleBtn = document.getElementById('interact-toggle-btn');
+  const interactionErrorDisplay = document.getElementById('interaction-error-display');
+  const interactionErrorMessage = document.getElementById('interaction-error-message');
+
+  // Quick Action Buttons/Inputs
+  const btnClick = document.getElementById('int-btn-click');
+  const btnHover = document.getElementById('int-btn-hover');
+  const btnFocus = document.getElementById('int-btn-focus');
+  const btnCheck = document.getElementById('int-btn-check');
+  const btnUncheck = document.getElementById('int-btn-uncheck');
+  const btnClear = document.getElementById('int-btn-clear');
+  const btnScroll = document.getElementById('int-btn-scroll');
+
+  const inputFill = document.getElementById('int-input-fill');
+  const btnFill = document.getElementById('int-btn-fill');
+  const inputSelect = document.getElementById('int-input-select');
+  const btnSelect = document.getElementById('int-btn-select');
+  const inputPress = document.getElementById('int-input-press');
+  const btnPress = document.getElementById('int-btn-press');
+
+  // Page Scripting elements
+  const pageTextareaScript = document.getElementById('page-textarea-script');
+  const intTextareaScript = document.getElementById('int-textarea-script');
+  const pageInputTimeout = document.getElementById('page-input-timeout');
+  const pageBtnRun = document.getElementById('page-btn-run');
+  const pageBtnClearConsole = document.getElementById('page-btn-clear-console');
+  const pageConsoleOutput = document.getElementById('page-console-output');
+  const pageScriptStatusBadge = document.getElementById('page-script-status-badge');
+
+  // Workspace elements
+  const workspaceSyncToggle = document.getElementById('workspace-sync-toggle');
+  const workspaceConsentCard = document.getElementById('workspace-consent-card');
+  const workspaceRunnerCard = document.getElementById('workspace-runner-card');
+  const workspaceTextareaScript = document.getElementById('workspace-textarea-script');
+  const workspaceSelectMode = document.getElementById('workspace-select-mode');
+  const workspaceInputRunner = document.getElementById('workspace-input-runner');
+  const workspaceAttachCdp = document.getElementById('workspace-attach-cdp');
+  const workspaceAttachLabel = document.getElementById('workspace-attach-label');
+  const workspaceInputTimeout = document.getElementById('workspace-input-timeout');
+  const workspaceBtnRun = document.getElementById('workspace-btn-run');
+  const workspaceBtnClearConsole = document.getElementById('workspace-btn-clear-console');
+  const workspaceConsoleOutput = document.getElementById('workspace-console-output');
+  const workspaceStatusBadge = document.getElementById('workspace-status-badge');
+  const workspaceInsertBaseBtn = document.getElementById('workspace-insert-base-btn');
+  const workspaceRunnerDescription = document.getElementById('workspace-runner-description');
+
+  // Editor Bridge Elements
+  const intScriptOpenEditorBtn = document.getElementById('int-script-open-editor-btn');
+  const elementScriptEditorBadge = document.getElementById('element-script-editor-badge');
+  const pageScriptOpenEditorBtn = document.getElementById('page-script-open-editor-btn');
+  const browserScriptEditorBadge = document.getElementById('browser-script-editor-badge');
+  const workspaceScriptOpenEditorBtn = document.getElementById('workspace-script-open-editor-btn');
+  const workspaceScriptEditorBadge = document.getElementById('workspace-script-editor-badge');
+
+  // Settings
+  const inputTimeout = { value: "5000" }; // fallback timeout for quick actions
+
+
   let isConnected = false;
   let activePageId = '';
   let currentMatchIndex = 0;
@@ -61,6 +130,7 @@
   let activeSimulationStatus = null;
   let betaFeaturesEnabled = false;
   let currentMatchedElements = [];
+  let activeScriptTarget = 'page'; // 'page' or 'element'
 
   // Undo/Redo stack variables
   let undoStack = [];
@@ -692,6 +762,7 @@
           populateTabSelect(message.pages, activePageId);
 
           updateEvaluateButtonState();
+          updateConnectionOverlays();
           
           // Fetch autocomplete metadata from page
           requestAutocompleteData();
@@ -710,6 +781,7 @@
           connectedInfo.classList.add('hidden');
           
           updateEvaluateButtonState();
+          updateConnectionOverlays();
           resultsPanel.classList.add('hidden');
 
           // Hide Phase 7 & 8 cards on disconnect
@@ -779,11 +851,131 @@
         autocompleteData = message.data || { roles: [], testIds: [], placeholders: [], labels: [], texts: [] };
         break;
       }
+      case 'action-result': {
+        setInteractionStatus(message.success ? 'Success' : 'Error', message.success ? 'success' : 'error');
+        if (interactionErrorDisplay && interactionErrorMessage) {
+          if (message.success) {
+            interactionErrorDisplay.classList.add('hidden');
+            interactionErrorMessage.textContent = '';
+          } else {
+            interactionErrorDisplay.classList.remove('hidden');
+            interactionErrorMessage.textContent = message.error || 'Quick Action execution failed.';
+          }
+        }
+        break;
+      }
+      case 'sandbox-result': {
+        if (message.log && message.log.length > 0) {
+          message.log.forEach(line => {
+            let type = 'stdout';
+            if (line.startsWith('[ERROR]')) type = 'error';
+            else if (line.startsWith('[WARN]')) type = 'warn';
+            writePageConsole(line + '\n', type);
+          });
+        }
+        if (message.success) {
+          writePageConsole(`[SUCCESS] Sandbox execution completed.\n`, 'success');
+          if (activeScriptTarget === 'element') {
+            setInteractionStatus('Success', 'success');
+            if (interactionErrorDisplay) {
+              interactionErrorDisplay.classList.add('hidden');
+            }
+          } else {
+            setPageScriptStatus('Success', 'success');
+          }
+        } else {
+          writePageConsole(`[ERROR] Sandbox execution failed: ${message.error}\n`, 'error');
+          if (activeScriptTarget === 'element') {
+            setInteractionStatus('Error', 'error');
+            if (interactionErrorDisplay && interactionErrorMessage) {
+              interactionErrorDisplay.classList.remove('hidden');
+              interactionErrorMessage.textContent = message.error || 'Element Sandbox Script execution failed.';
+            }
+          } else {
+            setPageScriptStatus('Failed', 'error');
+          }
+        }
+        break;
+      }
+      case 'sandbox-log': {
+        writeWorkspaceConsole(message.log, message.stream);
+        break;
+      }
+      case 'workspace-script-finished': {
+        if (message.success) {
+          writeWorkspaceConsole(`\n[SUCCESS] Script execution completed successfully (exit code ${message.code || 0}).\n`, 'success');
+          setWorkspaceStatus('Success', 'success');
+        } else {
+          writeWorkspaceConsole(`\n[ERROR] Script execution failed${message.error ? ': ' + message.error : ''} (exit code ${message.code || 1}).\n`, 'error');
+          setWorkspaceStatus('Failed', 'error');
+        }
+        break;
+      }
+      case 'editor-opened': {
+        const editorId = message.editorId;
+        if (editorId === 'element-script') {
+          if (elementScriptEditorBadge) elementScriptEditorBadge.classList.remove('hidden');
+          if (intTextareaScript) intTextareaScript.readOnly = true;
+        } else if (editorId === 'browser-script') {
+          if (browserScriptEditorBadge) browserScriptEditorBadge.classList.remove('hidden');
+          if (pageTextareaScript) pageTextareaScript.readOnly = true;
+        } else if (editorId === 'workspace-script') {
+          if (workspaceScriptEditorBadge) workspaceScriptEditorBadge.classList.remove('hidden');
+          if (workspaceTextareaScript) workspaceTextareaScript.readOnly = true;
+        }
+        break;
+      }
+      case 'editor-closed': {
+        const editorId = message.editorId;
+        if (editorId === 'element-script') {
+          if (elementScriptEditorBadge) elementScriptEditorBadge.classList.add('hidden');
+          if (intTextareaScript) intTextareaScript.readOnly = false;
+        } else if (editorId === 'browser-script') {
+          if (browserScriptEditorBadge) browserScriptEditorBadge.classList.add('hidden');
+          if (pageTextareaScript) pageTextareaScript.readOnly = false;
+        } else if (editorId === 'workspace-script') {
+          if (workspaceScriptEditorBadge) workspaceScriptEditorBadge.classList.add('hidden');
+          if (workspaceTextareaScript) workspaceTextareaScript.readOnly = false;
+        }
+        break;
+      }
+      case 'editor-content-synced': {
+        const editorId = message.editorId;
+        if (editorId === 'element-script') {
+          if (intTextareaScript) intTextareaScript.value = message.content;
+        } else if (editorId === 'browser-script') {
+          if (pageTextareaScript) pageTextareaScript.value = message.content;
+        } else if (editorId === 'workspace-script') {
+          if (workspaceTextareaScript) workspaceTextareaScript.value = message.content;
+        }
+        break;
+      }
     }
   });
 
   function renderResults(res) {
     resultsPanel.classList.remove('hidden');
+    if (interactionCard) {
+      interactionCard.classList.add('hidden');
+    }
+    if (interactionErrorDisplay) {
+      interactionErrorDisplay.classList.add('hidden');
+    }
+    if (interactToggleBtn) {
+      interactToggleBtn.classList.toggle('hidden', res.count === 0);
+      interactToggleBtn.classList.remove('active');
+      interactToggleBtn.textContent = 'Interact';
+    }
+    const firstTab = document.querySelector('.interaction-tab-btn[data-tab="int-tab-quick"]');
+    if (firstTab) {
+      const allTabs = document.querySelectorAll('.interaction-tab-btn');
+      const allContents = document.querySelectorAll('.interaction-tab-content');
+      allTabs.forEach(b => b.classList.remove('active'));
+      allContents.forEach(c => c.classList.remove('active'));
+      firstTab.classList.add('active');
+      const targetContent = document.getElementById('int-tab-quick');
+      if (targetContent) targetContent.classList.add('active');
+    }
     
     // 1. Match count banner
     matchCount.textContent = res.count;
@@ -2953,8 +3145,478 @@
     }
   }
 
+  // ==========================================
+  // PLAYWRIGHT PLAYGROUND TABBED INTERACTION LOGIC
+  // ==========================================
+
+  // Primary Tab switching behavior
+  const mainTabButtons = document.querySelectorAll('.main-tab-btn');
+  const mainTabContents = document.querySelectorAll('.main-tab-content');
+
+  if (mainTabButtons.length > 0) {
+    mainTabButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        mainTabButtons.forEach(b => b.classList.remove('active'));
+        mainTabContents.forEach(c => c.classList.remove('active'));
+
+        btn.classList.add('active');
+        const targetId = btn.getAttribute('data-tab');
+        const targetContent = document.getElementById(targetId);
+        if (targetContent) {
+          targetContent.classList.add('active');
+        }
+      });
+    });
+  }
+
+  // Connection overlay updater
+  function updateConnectionOverlays() {
+    if (isConnected) {
+      if (locatorConnectionOverlay) locatorConnectionOverlay.classList.add('hidden');
+      if (pageScriptConnectionOverlay) pageScriptConnectionOverlay.classList.add('hidden');
+      if (workspaceAttachCdp) {
+        workspaceAttachCdp.disabled = false;
+        if (workspaceAttachLabel) workspaceAttachLabel.style.opacity = '1';
+      }
+    } else {
+      if (locatorConnectionOverlay) locatorConnectionOverlay.classList.remove('hidden');
+      if (pageScriptConnectionOverlay) pageScriptConnectionOverlay.classList.remove('hidden');
+      if (workspaceAttachCdp) {
+        workspaceAttachCdp.checked = false;
+        workspaceAttachCdp.disabled = true;
+        if (workspaceAttachLabel) workspaceAttachLabel.style.opacity = '0.5';
+      }
+    }
+  }
+
+  // Load initial workspace sync toggle state
+  const savedSyncState = localStorage.getItem('workspace_sync_enabled') === 'true';
+  if (workspaceSyncToggle) {
+    workspaceSyncToggle.checked = savedSyncState;
+    toggleWorkspaceRunnerVisibility(savedSyncState);
+
+    workspaceSyncToggle.addEventListener('change', () => {
+      const enabled = workspaceSyncToggle.checked;
+      localStorage.setItem('workspace_sync_enabled', enabled);
+      toggleWorkspaceRunnerVisibility(enabled);
+    });
+  }
+
+  function toggleWorkspaceRunnerVisibility(enabled) {
+    if (workspaceConsentCard && workspaceRunnerCard) {
+      if (enabled) {
+        workspaceConsentCard.classList.add('hidden');
+        workspaceRunnerCard.classList.remove('hidden');
+      } else {
+        workspaceConsentCard.classList.remove('hidden');
+        workspaceRunnerCard.classList.add('hidden');
+      }
+    }
+  }
+
+  // Mode changes in workspace mode
+  if (workspaceSelectMode) {
+    workspaceSelectMode.addEventListener('change', () => {
+      const val = workspaceSelectMode.value;
+      if (val === 'workspace-standalone') {
+        workspaceInputRunner.placeholder = 'e.g. npx tsx';
+        if (!workspaceInputRunner.value.trim() || workspaceInputRunner.value === 'npx playwright test') {
+          workspaceInputRunner.value = 'npx tsx';
+        }
+      } else if (val === 'playwright-test') {
+        workspaceInputRunner.placeholder = 'e.g. npx playwright test';
+        if (!workspaceInputRunner.value.trim() || workspaceInputRunner.value === 'npx tsx') {
+          workspaceInputRunner.value = 'npx playwright test';
+        }
+      }
+    });
+  }
+
+  // Console logging helpers for Page Scripting
+  function writePageConsole(text, type = 'info') {
+    if (!pageConsoleOutput) return;
+    const placeholder = pageConsoleOutput.querySelector('.console-placeholder');
+    if (placeholder) {
+      pageConsoleOutput.innerHTML = '';
+    }
+    const line = document.createElement('div');
+    line.className = `console-line ${type}`;
+    line.textContent = text;
+    pageConsoleOutput.appendChild(line);
+    pageConsoleOutput.scrollTop = pageConsoleOutput.scrollHeight;
+  }
+
+  function clearPageConsole() {
+    if (pageConsoleOutput) {
+      pageConsoleOutput.innerHTML = '<div class="console-placeholder">Console prints and evaluation outputs will appear here...</div>';
+    }
+  }
+
+  function setPageScriptStatus(text, type = 'info') {
+    if (!pageScriptStatusBadge) return;
+    pageScriptStatusBadge.textContent = text;
+    pageScriptStatusBadge.className = 'badge';
+    if (type === 'success') {
+      pageScriptStatusBadge.style.backgroundColor = 'var(--color-success)';
+    } else if (type === 'error') {
+      pageScriptStatusBadge.style.backgroundColor = 'var(--color-danger)';
+    } else if (type === 'running') {
+      pageScriptStatusBadge.style.backgroundColor = 'var(--color-warning)';
+    } else {
+      pageScriptStatusBadge.style.backgroundColor = 'var(--accent-start)';
+    }
+  }
+
+  if (pageBtnClearConsole) {
+    pageBtnClearConsole.addEventListener('click', clearPageConsole);
+  }
+
+  // Console logging helpers for Workspace Sync
+  function writeWorkspaceConsole(text, type = 'info') {
+    if (!workspaceConsoleOutput) return;
+    const placeholder = workspaceConsoleOutput.querySelector('.console-placeholder');
+    if (placeholder) {
+      workspaceConsoleOutput.innerHTML = '';
+    }
+    const line = document.createElement('div');
+    line.className = `console-line ${type}`;
+    line.textContent = text;
+    workspaceConsoleOutput.appendChild(line);
+    workspaceConsoleOutput.scrollTop = workspaceConsoleOutput.scrollHeight;
+  }
+
+  function clearWorkspaceConsole() {
+    if (workspaceConsoleOutput) {
+      workspaceConsoleOutput.innerHTML = '<div class="console-placeholder">Terminal logs and process streams will appear here...</div>';
+    }
+  }
+
+  function setWorkspaceStatus(text, type = 'info') {
+    if (!workspaceStatusBadge) return;
+    workspaceStatusBadge.textContent = text;
+    workspaceStatusBadge.className = 'badge';
+    if (type === 'success') {
+      workspaceStatusBadge.style.backgroundColor = 'var(--color-success)';
+    } else if (type === 'error') {
+      workspaceStatusBadge.style.backgroundColor = 'var(--color-danger)';
+    } else if (type === 'running') {
+      workspaceStatusBadge.style.backgroundColor = 'var(--color-warning)';
+    } else {
+      workspaceStatusBadge.style.backgroundColor = 'var(--accent-start)';
+    }
+  }
+
+  if (workspaceBtnClearConsole) {
+    workspaceBtnClearConsole.addEventListener('click', clearWorkspaceConsole);
+  }
+
+  function setInteractionStatus(text, type = 'info') {
+    if (!interactionStatusBadge) return;
+    interactionStatusBadge.textContent = text;
+    interactionStatusBadge.className = 'badge';
+    if (type === 'success') {
+      interactionStatusBadge.style.backgroundColor = 'var(--color-success)';
+    } else if (type === 'error') {
+      interactionStatusBadge.style.backgroundColor = 'var(--color-danger)';
+    } else if (type === 'running') {
+      interactionStatusBadge.style.backgroundColor = 'var(--color-warning)';
+    } else {
+      interactionStatusBadge.style.backgroundColor = 'var(--accent-start)';
+    }
+  }
+
+  // Helper to send quick actions
+  function sendQuickAction(action, args = []) {
+    const locatorStr = locatorInput.value.trim();
+    if (!locatorStr || !activePageId) return;
+
+    setInteractionStatus('Running', 'running');
+
+    const timeout = 5000; // fallback timeout for quick actions
+
+    vscode.postMessage({
+      type: 'perform-action',
+      locatorStr,
+      action,
+      args,
+      timeout
+    });
+  }
+
+  // Quick Action Buttons event listeners
+  if (btnClick) btnClick.addEventListener('click', () => sendQuickAction('click'));
+  if (btnHover) btnHover.addEventListener('click', () => sendQuickAction('hover'));
+  if (btnFocus) btnFocus.addEventListener('click', () => sendQuickAction('focus'));
+  if (btnCheck) btnCheck.addEventListener('click', () => sendQuickAction('check'));
+  if (btnUncheck) btnUncheck.addEventListener('click', () => sendQuickAction('uncheck'));
+  if (btnClear) btnClear.addEventListener('click', () => sendQuickAction('clear'));
+  if (btnScroll) btnScroll.addEventListener('click', () => sendQuickAction('scrollIntoView'));
+
+  if (btnFill) {
+    btnFill.addEventListener('click', () => {
+      const val = inputFill.value;
+      sendQuickAction('fill', [val]);
+    });
+  }
+
+  if (btnSelect) {
+    btnSelect.addEventListener('click', () => {
+      const val = inputSelect.value;
+      sendQuickAction('selectOption', [val]);
+    });
+  }
+
+  if (btnPress) {
+    btnPress.addEventListener('click', () => {
+      const val = inputPress.value.trim();
+      if (!val) {
+        return;
+      }
+      sendQuickAction('press', [val]);
+    });
+  }
+
+  // Run custom script against page (Sandbox)
+  if (pageBtnRun) {
+    pageBtnRun.addEventListener('click', () => {
+      const userCode = pageTextareaScript.value.trim();
+      if (!userCode) {
+        writePageConsole(`[WARN] Script body is empty.\n`, 'warn');
+        return;
+      }
+      if (!isConnected || !activePageId) {
+        writePageConsole(`[ERROR] Browser is disconnected.\n`, 'error');
+        return;
+      }
+
+      activeScriptTarget = 'page';
+      const timeout = parseInt(pageInputTimeout.value, 10) || 5000;
+      setPageScriptStatus('Running', 'running');
+      clearPageConsole();
+      writePageConsole(`[INFO] Starting execution in Extension Sandbox...\n`, 'info');
+
+      vscode.postMessage({
+        type: 'execute-sandbox-code',
+        locatorStr: '', // Empty, as it targets page globally
+        userCode,
+        timeout
+      });
+    });
+  }
+
+  // Run custom script in workspace context
+  if (workspaceBtnRun) {
+    workspaceBtnRun.addEventListener('click', () => {
+      const userCode = workspaceTextareaScript.value.trim();
+      if (!userCode) {
+        writeWorkspaceConsole(`[WARN] Script body is empty.\n`, 'warn');
+        return;
+      }
+
+      const mode = workspaceSelectMode.value;
+      const runnerCommand = workspaceInputRunner.value.trim();
+      const attachCdp = workspaceAttachCdp.checked;
+      const timeout = parseInt(workspaceInputTimeout.value, 10) || 30000;
+
+      setWorkspaceStatus('Running', 'running');
+      clearWorkspaceConsole();
+      writeWorkspaceConsole(`[INFO] Preparing file and compiling in Workspace Context...\n`, 'info');
+
+      const cdpUrl = cdpUrlInput.value.trim();
+      vscode.postMessage({
+        type: 'execute-workspace-script',
+        userCode,
+        mode,
+        runnerCommand,
+        attachCdp,
+        cdpUrl,
+        timeout
+      });
+    });
+  }
+
+  // Element Interaction card toggle listener
+  if (interactToggleBtn) {
+    interactToggleBtn.addEventListener('click', () => {
+      if (interactionCard) {
+        const isHidden = interactionCard.classList.contains('hidden');
+        if (isHidden) {
+          interactionCard.classList.remove('hidden');
+          interactToggleBtn.classList.add('active');
+          interactToggleBtn.textContent = 'Close';
+        } else {
+          interactionCard.classList.add('hidden');
+          interactToggleBtn.classList.remove('active');
+          interactToggleBtn.textContent = 'Interact';
+        }
+      }
+    });
+  }
+
+  // Interaction tab switching logic
+  const interactionTabButtons = document.querySelectorAll('.interaction-tab-btn');
+  const interactionTabContents = document.querySelectorAll('.interaction-tab-content');
+
+  if (interactionTabButtons.length > 0) {
+    interactionTabButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        interactionTabButtons.forEach(b => b.classList.remove('active'));
+        interactionTabContents.forEach(c => c.classList.remove('active'));
+
+        btn.classList.add('active');
+        const targetId = btn.getAttribute('data-tab');
+        const targetContent = document.getElementById(targetId);
+        if (targetContent) {
+          targetContent.classList.add('active');
+        }
+      });
+    });
+  }
+
+  // Run Element Script execution listener
+  const runIntScriptBtn = document.getElementById('int-btn-run-script');
+
+  if (runIntScriptBtn && intTextareaScript) {
+    runIntScriptBtn.addEventListener('click', () => {
+      const userCode = intTextareaScript.value.trim();
+      if (!userCode) {
+        setInteractionStatus('Empty Script', 'error');
+        return;
+      }
+      if (!isConnected || !activePageId) {
+        setInteractionStatus('Disconnected', 'error');
+        return;
+      }
+
+      activeScriptTarget = 'element';
+      setInteractionStatus('Running', 'running');
+      clearPageConsole();
+      writePageConsole(`[INFO] Starting element script execution in sandbox...\n`, 'info');
+
+      const locatorStr = locatorInput.value.trim();
+      vscode.postMessage({
+        type: 'execute-sandbox-code',
+        locatorStr,
+        userCode,
+        timeout: 5000
+      });
+    });
+  }
+
+  // Link to Page Scripting tab navigation listener
+  const linkToPageScripting = document.getElementById('link-to-page-scripting');
+  if (linkToPageScripting) {
+    linkToPageScripting.addEventListener('click', (e) => {
+      e.preventDefault();
+      const pageScriptTabBtn = document.querySelector('.main-tab-btn[data-tab="tab-page-script"]');
+      if (pageScriptTabBtn) {
+        pageScriptTabBtn.click();
+      }
+    });
+  }
+
+  // Workspace runner description and placeholder helper function
+  function updateWorkspaceRunnerHelp() {
+    if (!workspaceSelectMode || !workspaceRunnerDescription || !workspaceTextareaScript) return;
+    const isPlaywright = workspaceSelectMode.value === 'playwright-test';
+    const attachCdp = workspaceAttachCdp ? workspaceAttachCdp.checked : false;
+
+    if (isPlaywright) {
+      if (workspaceInsertBaseBtn) {
+        workspaceInsertBaseBtn.textContent = 'Insert Test Spec';
+      }
+      if (attachCdp) {
+        workspaceRunnerDescription.innerHTML = 'Runs inside the Playwright Test framework. The <code>page</code> fixture is automatically connected to your live tab (no launch boilerplate needed!). Supports imports, test fixtures, configuration, and assertions.';
+      } else {
+        workspaceRunnerDescription.innerHTML = 'Runs inside the Playwright Test framework in a clean browser session. Supports imports, test fixtures, configuration, and assertions.';
+      }
+      workspaceTextareaScript.placeholder = "import { test, expect } from '@playwright/test';\n\ntest('Run spec', async ({ page }) => {\n  await page.goto('https://github.com/');\n  console.log('Running test in workspace spec!');\n});";
+    } else {
+      if (workspaceInsertBaseBtn) {
+        workspaceInsertBaseBtn.textContent = 'Insert TS Script';
+      }
+      if (attachCdp) {
+        workspaceRunnerDescription.innerHTML = 'Runs as a plain Node/TypeScript script. Best for utility scripts. Exposes a global <code>page</code> variable automatically connected to your live browser tab. Imports of local modules and framework objects are fully supported.';
+      } else {
+        workspaceRunnerDescription.innerHTML = 'Runs as a plain Node/TypeScript script. <strong style="color: var(--color-warning);">Warning:</strong> Because "Attach to active browser (CDP)" is unchecked, the global <code>page</code> variable will <strong>not</strong> be defined. You must import and launch your own browser instance in your script. Local imports are supported.';
+      }
+      workspaceTextareaScript.placeholder = "// Plain Standalone TypeScript Script\n// Exposes global 'page' variable automatically when CDP is attached\nawait page.goto('https://github.com/');\nconsole.log('Page Title:', await page.title());";
+    }
+  }
+
+  if (workspaceSelectMode) {
+    workspaceSelectMode.addEventListener('change', updateWorkspaceRunnerHelp);
+  }
+  if (workspaceAttachCdp) {
+    workspaceAttachCdp.addEventListener('change', updateWorkspaceRunnerHelp);
+  }
+  
+  // Call initially to set correct state
+  updateWorkspaceRunnerHelp();
+
+  if (workspaceInsertBaseBtn && workspaceTextareaScript) {
+    workspaceInsertBaseBtn.addEventListener('click', () => {
+      if (workspaceSelectMode.value === 'playwright-test') {
+        workspaceTextareaScript.value = `import { test, expect } from '@playwright/test';\n\ntest('Run spec', async ({ page }) => {\n  await page.goto('https://github.com/');\n  console.log('Running test in workspace spec!');\n});`;
+      } else {
+        workspaceTextareaScript.value = `// Plain Standalone TypeScript Script\n// Exposes global 'page' variable automatically when CDP is attached\nawait page.goto('https://github.com/');\nconsole.log('Page Title:', await page.title());`;
+      }
+    });
+  }
+  // Editor Bridge button listeners
+  if (intScriptOpenEditorBtn && intTextareaScript) {
+    intScriptOpenEditorBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'open-in-editor',
+        editorId: 'element-script',
+        content: intTextareaScript.value,
+        mode: 'typescript'
+      });
+    });
+  }
+
+  if (pageScriptOpenEditorBtn && pageTextareaScript) {
+    pageScriptOpenEditorBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'open-in-editor',
+        editorId: 'browser-script',
+        content: pageTextareaScript.value,
+        mode: 'typescript'
+      });
+    });
+  }
+
+  if (workspaceScriptOpenEditorBtn && workspaceTextareaScript) {
+    workspaceScriptOpenEditorBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'open-in-editor',
+        editorId: 'workspace-script',
+        content: workspaceTextareaScript.value,
+        mode: workspaceSelectMode.value // 'playwright-test' or 'workspace-standalone'
+      });
+    });
+  }
+
+  // Expand/Collapse console output panels
+  document.querySelectorAll('.console-expand-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-target');
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.classList.toggle('expanded');
+        btn.classList.toggle('expanded');
+        btn.textContent = target.classList.contains('expanded') ? '⤡' : '⤢';
+        // Scroll to bottom when expanding
+        if (target.classList.contains('expanded')) {
+          target.scrollTop = target.scrollHeight;
+        }
+      }
+    });
+  });
+
   // Request configuration upon initialization
   vscode.postMessage({ type: 'get-config' });
+  updateConnectionOverlays();
 
 })();
 

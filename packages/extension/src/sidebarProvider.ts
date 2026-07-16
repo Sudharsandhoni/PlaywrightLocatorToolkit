@@ -87,6 +87,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private activePageId?: string;
   private spawnedBrowser?: child_process.ChildProcess;
   private tempProfileDir?: string;
+  private editorDocs = new Map<string, vscode.Uri>();
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -175,7 +176,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
               const cdpUrl = `http://127.0.0.1:${port}`;
               const pages = await this.engine.connect(cdpUrl);
-              const activePageId = pages[0]?.id;
+              const firstVisible = pages.find((p: any) => {
+                const url = p.url || '';
+                const title = (p.title || '').toLowerCase();
+                return !url.startsWith('chrome-devtools://') &&
+                       !url.startsWith('devtools://') &&
+                       !title.includes('developer tools') &&
+                       !title.includes('devtools');
+              });
+              const activePageId = firstVisible ? firstVisible.id : pages[0]?.id;
               this.activePageId = activePageId;
 
               webviewView.webview.postMessage({
@@ -211,7 +220,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 }
               }
               const pages = await this.engine.connect(data.cdpUrl);
-              const activePageId = pages[0]?.id;
+              const firstVisible = pages.find((p: any) => {
+                const url = p.url || '';
+                const title = (p.title || '').toLowerCase();
+                return !url.startsWith('chrome-devtools://') &&
+                       !url.startsWith('devtools://') &&
+                       !title.includes('developer tools') &&
+                       !title.includes('devtools');
+              });
+              const activePageId = firstVisible ? firstVisible.id : pages[0]?.id;
               this.activePageId = activePageId;
               webviewView.webview.postMessage({
                 type: 'connect-status',
@@ -477,6 +494,398 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             });
             break;
           }
+          case 'perform-action': {
+            if (!this.activePageId) return;
+            const res = await this.engine.performAction(
+              this.activePageId,
+              data.locatorStr,
+              data.action,
+              data.args || [],
+              data.timeout || 5000
+            );
+            webviewView.webview.postMessage({
+              type: 'action-result',
+              action: data.action,
+              success: res.success,
+              error: res.error
+            });
+            break;
+          }
+          case 'open-in-editor': {
+            try {
+              const editorId = data.editorId;
+              const content = data.content || '';
+              const mode = data.mode || 'typescript';
+
+              let workspaceRoot = '';
+              if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+              } else {
+                workspaceRoot = os.tmpdir();
+              }
+
+              // Detect language preference (JS vs TS)
+              const activeEditor = vscode.window.activeTextEditor;
+              const activeFilePath = activeEditor ? activeEditor.document.uri.fsPath : undefined;
+              
+              let isTypeScript = true;
+              if (activeFilePath) {
+                if (activeFilePath.endsWith('.js') || activeFilePath.endsWith('.jsx') || activeFilePath.endsWith('.mjs')) {
+                  isTypeScript = false;
+                } else if (activeFilePath.endsWith('.ts') || activeFilePath.endsWith('.tsx') || activeFilePath.endsWith('.mts')) {
+                  isTypeScript = true;
+                }
+              } else {
+                const hasTsConfig = fs.existsSync(path.join(workspaceRoot, 'tsconfig.json'));
+                const hasPlaywrightTs = fs.existsSync(path.join(workspaceRoot, 'playwright.config.ts'));
+                isTypeScript = hasTsConfig || hasPlaywrightTs;
+              }
+
+              const ext = isTypeScript ? 'ts' : 'js';
+
+              // Determine target directory (same directory as active file/tests or root)
+              let targetDir = workspaceRoot;
+              if (activeFilePath && activeFilePath.startsWith(workspaceRoot)) {
+                try {
+                  const dir = path.dirname(activeFilePath);
+                  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+                    targetDir = dir;
+                  }
+                } catch {}
+              } else {
+                // Find a common spec/test dir in the workspace
+                const findFirstSpecDir = (dir: string): string | null => {
+                  try {
+                    const files = fs.readdirSync(dir);
+                    const dirsToSearch: string[] = [];
+                    for (const file of files) {
+                      if (file === 'node_modules' || file === '.git' || file === '.vscode' || file === 'dist' || file === 'build') {
+                        continue;
+                      }
+                      const fullPath = path.join(dir, file);
+                      try {
+                        const stat = fs.statSync(fullPath);
+                        if (stat.isDirectory()) {
+                          dirsToSearch.push(fullPath);
+                        } else if (
+                          (file.endsWith('.spec.ts') || file.endsWith('.spec.js') || 
+                           file.endsWith('.test.ts') || file.endsWith('.test.js')) &&
+                          !file.includes('locator-lens-sandbox')
+                        ) {
+                          return dir;
+                        }
+                      } catch {}
+                    }
+                    for (const subDir of dirsToSearch) {
+                      const found = findFirstSpecDir(subDir);
+                      if (found) return found;
+                    }
+                  } catch {}
+                  return null;
+                };
+
+                const resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+                if (resolvedSpecDir) {
+                  targetDir = resolvedSpecDir;
+                } else {
+                  // check playwright config testDir
+                  let configTestDir: string | undefined = undefined;
+                  const configFiles = ['playwright.config.ts', 'playwright.config.js'];
+                  for (const configFile of configFiles) {
+                    const configPath = path.join(workspaceRoot, configFile);
+                    if (fs.existsSync(configPath)) {
+                      try {
+                        const content = fs.readFileSync(configPath, 'utf8');
+                        const match = content.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+                        if (match && match[1]) {
+                          configTestDir = match[1].trim();
+                          break;
+                        }
+                      } catch {}
+                    }
+                  }
+                  if (configTestDir) {
+                    const resolvedTestDir = path.resolve(workspaceRoot, configTestDir);
+                    if (fs.existsSync(resolvedTestDir) && fs.statSync(resolvedTestDir).isDirectory()) {
+                      targetDir = resolvedTestDir;
+                    }
+                  } else {
+                    const commonDirs = ['tests', 'e2e', 'specs', 'test'];
+                    for (const dirName of commonDirs) {
+                      const fullDir = path.join(workspaceRoot, dirName);
+                      if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+                        targetDir = fullDir;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+
+              // Ensure targetDir directory exists
+              if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+              }
+
+              // Add to workspace root .gitignore or fallback to .vscode/.gitignore
+              const rootGitIgnore = path.join(workspaceRoot, '.gitignore');
+              const ignorePatterns = [
+                '# Playwright Live Playground Temporary Files',
+                '**/playground-*.ts',
+                '**/playground-*.js',
+                '**/locator-lens-sandbox.spec.ts',
+                '**/locator-lens-sandbox.spec.js',
+                '**/locator-lens-sandbox.ts',
+                '**/locator-lens-sandbox.js'
+              ];
+              if (fs.existsSync(rootGitIgnore)) {
+                try {
+                  const gitIgnoreContent = fs.readFileSync(rootGitIgnore, 'utf8');
+                  const linesToAdd = ignorePatterns.filter(pattern => !gitIgnoreContent.includes(pattern));
+                  if (linesToAdd.length > 0) {
+                    fs.writeFileSync(rootGitIgnore, gitIgnoreContent.trim() + '\n\n' + linesToAdd.join('\n') + '\n', 'utf8');
+                  }
+                } catch {}
+              } else {
+                const vscodeDir = path.join(workspaceRoot, '.vscode');
+                if (!fs.existsSync(vscodeDir)) {
+                  fs.mkdirSync(vscodeDir, { recursive: true });
+                }
+                const gitIgnorePath = path.join(vscodeDir, '.gitignore');
+                try {
+                  let gitIgnoreContent = '';
+                  if (fs.existsSync(gitIgnorePath)) {
+                    gitIgnoreContent = fs.readFileSync(gitIgnorePath, 'utf8');
+                  }
+                  const linesToAdd = ignorePatterns.filter(pattern => !gitIgnoreContent.includes(pattern));
+                  if (linesToAdd.length > 0) {
+                    fs.writeFileSync(gitIgnorePath, gitIgnoreContent.trim() + '\n\n' + linesToAdd.join('\n') + '\n', 'utf8');
+                  }
+                } catch {}
+              }
+
+              const fileName = `playground-${editorId}.${ext}`;
+              const filePath = path.join(targetDir, fileName);
+
+              // Prepend typings reference for full autocomplete if it doesn't already have it
+              let finalContent = content;
+              if (!content.includes('/// <reference types=')) {
+                if (editorId === 'element-script') {
+                  finalContent = `/// <reference types="@playwright/test" />\n// Variable 'e' is the matched Locator, and 'page' is the active Page.\n\n` + content;
+                } else if (editorId === 'browser-script') {
+                  finalContent = `/// <reference types="@playwright/test" />\n// Variable 'page' is the active Page.\n\n` + content;
+                } else {
+                  finalContent = `/// <reference types="@playwright/test" />\n\n` + content;
+                }
+              }
+
+              fs.writeFileSync(filePath, finalContent, 'utf8');
+
+              const uri = vscode.Uri.file(filePath);
+              this.editorDocs.set(editorId, uri);
+
+              // Open document beside the webview
+              const doc = await vscode.workspace.openTextDocument(uri);
+              await vscode.window.showTextDocument(doc, {
+                viewColumn: vscode.ViewColumn.Beside,
+                preserveFocus: false,
+                preview: false
+              });
+
+              webviewView.webview.postMessage({
+                type: 'editor-opened',
+                editorId
+              });
+            } catch (err: any) {
+              vscode.window.showErrorMessage(`Failed to open editor: ${err.message}`);
+            }
+            break;
+          }
+          case 'execute-sandbox-code': {
+            if (!this.activePageId) return;
+            
+            let userCode = data.userCode || '';
+            const editorId = data.locatorStr ? 'element-script' : 'browser-script';
+            const editorUri = this.editorDocs.get(editorId);
+            if (editorUri) {
+              const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === editorUri.fsPath);
+              if (doc) {
+                userCode = doc.getText();
+              }
+            }
+
+            const res = await this.engine.executeExtensionSandbox(
+              this.activePageId,
+              data.locatorStr,
+              userCode,
+              data.timeout || 5000
+            );
+            webviewView.webview.postMessage({
+              type: 'sandbox-result',
+              success: res.success,
+              log: res.log,
+              error: res.error
+            });
+            break;
+          }
+          case 'execute-workspace-script': {
+            const attachCdp = !!data.attachCdp;
+            let targetUrl = '';
+            let defaultPort = 9222;
+            let cdpUrl = '';
+
+            if (attachCdp) {
+              if (!this.activePageId) {
+                webviewView.webview.postMessage({
+                  type: 'workspace-script-finished',
+                  success: false,
+                  error: 'Please connect to a browser page/tab first to attach CDP execution.'
+                });
+                return;
+              }
+
+              const page = this.engine.getPage(this.activePageId);
+              if (!page) {
+                webviewView.webview.postMessage({
+                  type: 'workspace-script-finished',
+                  success: false,
+                  error: 'Active page connection not found.'
+                });
+                return;
+              }
+              targetUrl = page.url();
+              const config = vscode.workspace.getConfiguration('playwright-locator-toolkit');
+              defaultPort = config.get<number>('debuggingPort', 9222);
+              cdpUrl = data.cdpUrl || `http://127.0.0.1:${defaultPort}`;
+            }
+
+            let workspaceRoot = '';
+            if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+              workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            } else {
+              webviewView.webview.postMessage({
+                type: 'workspace-script-finished',
+                success: false,
+                error: 'Workspace is required to run workspace scripts.'
+              });
+              return;
+            }
+
+            let userCode = data.userCode || '';
+            const editorUri = this.editorDocs.get('workspace-script');
+            if (editorUri) {
+              const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === editorUri.fsPath);
+              if (doc) {
+                userCode = doc.getText();
+              }
+            }
+
+            const activeEditor = vscode.window.activeTextEditor;
+            const activeFilePath = activeEditor ? activeEditor.document.uri.fsPath : undefined;
+
+            const isPlaywrightTest = data.mode === 'playwright-test';
+            const { filePath, cleanup } = this.engine.prepareWorkspaceScript(
+              workspaceRoot,
+              userCode,
+              cdpUrl,
+              targetUrl,
+              isPlaywrightTest,
+              attachCdp,
+              activeFilePath
+            );
+
+            let runCmd = (data.runnerCommand || '').trim();
+            if (!runCmd) {
+              if (isPlaywrightTest) {
+                runCmd = 'npx playwright test';
+              } else {
+                runCmd = filePath.endsWith('.ts') ? 'npx tsx' : 'node';
+              }
+            }
+
+            const relativePath = path.relative(workspaceRoot, filePath).replace(/\\/g, '/');
+            let fullCmd = '';
+            if (isPlaywrightTest) {
+              fullCmd = `${runCmd} "${relativePath}" --reporter=line`;
+            } else {
+              fullCmd = `${runCmd} "${relativePath}"`;
+            }
+
+            webviewView.webview.postMessage({
+              type: 'sandbox-log',
+              log: `[INFO] Launching script runner: ${fullCmd}\n`,
+              stream: 'info'
+            });
+
+            const cp = child_process.spawn(fullCmd, {
+              cwd: workspaceRoot,
+              shell: true,
+              env: {
+                ...process.env,
+                PLAYWRIGHT_CHROMIUM_ATTACH_TO_PORT: String(defaultPort)
+              }
+            });
+
+            let processKilled = false;
+            const timeoutMs = data.timeout || 15000;
+            const timer = setTimeout(() => {
+              processKilled = true;
+              cp.kill();
+              webviewView.webview.postMessage({
+                type: 'sandbox-log',
+                log: `[ERROR] Execution timed out after ${timeoutMs}ms.\n`,
+                stream: 'stderr'
+              });
+            }, timeoutMs);
+
+            cp.stdout.on('data', (chunk) => {
+              if (processKilled) return;
+              webviewView.webview.postMessage({
+                type: 'sandbox-log',
+                log: chunk.toString(),
+                stream: 'stdout'
+              });
+            });
+
+            cp.stderr.on('data', (chunk) => {
+              if (processKilled) return;
+              webviewView.webview.postMessage({
+                type: 'sandbox-log',
+                log: chunk.toString(),
+                stream: 'stderr'
+              });
+            });
+
+            cp.on('error', (err) => {
+              clearTimeout(timer);
+              cleanup();
+              webviewView.webview.postMessage({
+                type: 'sandbox-log',
+                log: `[ERROR] Failed to start process: ${err.message}\n`,
+                stream: 'stderr'
+              });
+              webviewView.webview.postMessage({
+                type: 'workspace-script-finished',
+                success: false,
+                code: 1,
+                error: err.message
+              });
+            });
+
+            cp.on('close', (code) => {
+              clearTimeout(timer);
+              cleanup();
+              if (processKilled) return;
+              
+              webviewView.webview.postMessage({
+                type: 'workspace-script-finished',
+                success: code === 0,
+                code
+              });
+            });
+
+            break;
+          }
 
         }
       } catch (err: any) {
@@ -499,6 +908,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    // Watch for document changes and sync content back to the webview
+    const docChangeDisposable = vscode.workspace.onDidChangeTextDocument((e) => {
+      for (const [editorId, uri] of this.editorDocs.entries()) {
+        if (e.document.uri.fsPath === uri.fsPath) {
+          try {
+            webviewView.webview.postMessage({
+              type: 'editor-content-synced',
+              editorId,
+              content: e.document.getText()
+            });
+          } catch {}
+        }
+      }
+    });
+
+    // Watch for document closures, clean up mapping and delete temp file
+    const docCloseDisposable = vscode.workspace.onDidCloseTextDocument((doc) => {
+      for (const [editorId, uri] of this.editorDocs.entries()) {
+        if (doc.uri.fsPath === uri.fsPath) {
+          this.editorDocs.delete(editorId);
+          try {
+            webviewView.webview.postMessage({
+              type: 'editor-closed',
+              editorId
+            });
+          } catch {}
+          try {
+            if (fs.existsSync(doc.uri.fsPath)) {
+              fs.unlinkSync(doc.uri.fsPath);
+            }
+          } catch {}
+        }
+      }
+    });
+
     // Listen for configuration changes
     const configChangeDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('playwright-locator-toolkit.enableBetaFeatures')) {
@@ -513,6 +957,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.onDidDispose(() => {
       configChangeDisposable.dispose();
+      docChangeDisposable.dispose();
+      docCloseDisposable.dispose();
       // Drop the active CDP connection but leave the browser running and profile folder intact.
       this.engine.softDisconnect();
     });

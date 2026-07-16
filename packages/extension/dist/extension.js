@@ -1045,6 +1045,22 @@ var AGENT_SCRIPT = `
       }
     },
 
+    simulateHover(el) {
+      if (!el) return false;
+      try {
+        const rect = el.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        
+        el.dispatchEvent(new MouseEvent('mouseenter', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseover', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mousemove', { clientX, clientY, bubbles: true, cancelable: true }));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
     // Phase 8 \u2014 Form-Aware Analysis
     scanForms() {
       const FIELD_TAGS = ['input', 'select', 'textarea'];
@@ -1745,7 +1761,7 @@ var LocatorEngine = class {
     if (this.browser) {
       await this.disconnect();
     }
-    this.browser = await import_playwright_core.chromium.connectOverCDP(cdpUrl, { timeout: 5e3 });
+    this.browser = await import_playwright_core.chromium.connectOverCDP(cdpUrl, { timeout: 3e4 });
     this.pages.clear();
     const contexts = this.browser.contexts();
     const allPages = [];
@@ -2189,6 +2205,24 @@ Correct:   .or(locator('...'))  \u2190  pass the alternative locator as argument
       }, [handle, x, y]);
     } catch (err) {
       console.error("Failed to simulate click:", err);
+      return false;
+    }
+  }
+  async simulateHover(pageId, locatorStr) {
+    const page = this.getPage(pageId);
+    if (!page) return false;
+    try {
+      await this.ensureAgentInjected(page);
+      const parsedSteps = parseLocator(locatorStr);
+      if (parsedSteps.length === 0) return false;
+      const locatorInstance = constructLocator(page, parsedSteps);
+      const handle = await locatorInstance.elementHandle();
+      if (!handle) return false;
+      return await page.evaluate((el) => {
+        return window.__locatorLensAgent.simulateHover(el);
+      }, handle);
+    } catch (err) {
+      console.error("Failed to simulate hover:", err);
       return false;
     }
   }
@@ -3050,7 +3084,383 @@ export class UIAutomationSDK {
       suggestedAlternatives: suggestions
     };
   }
+  async performAction(pageId, locatorStr, action, args, timeoutMs = 5e3) {
+    const page = this.getPage(pageId);
+    if (!page) {
+      return { success: false, error: "Page not found." };
+    }
+    try {
+      const parsedSteps = parseLocator(locatorStr);
+      if (parsedSteps.length === 0) {
+        return { success: false, error: "Empty locator expression." };
+      }
+      const locatorInstance = constructLocator(page, parsedSteps);
+      if (!locatorInstance) {
+        return { success: false, error: "Failed to construct locator." };
+      }
+      const options = { timeout: timeoutMs };
+      switch (action) {
+        case "click":
+          await locatorInstance.click(options);
+          break;
+        case "hover":
+          await locatorInstance.hover(options);
+          break;
+        case "fill":
+          if (args.length === 0 || typeof args[0] !== "string") {
+            return { success: false, error: "Fill action requires a string value." };
+          }
+          await locatorInstance.fill(args[0], options);
+          break;
+        case "clear":
+          await locatorInstance.clear(options);
+          break;
+        case "check":
+          await locatorInstance.check(options);
+          break;
+        case "uncheck":
+          await locatorInstance.uncheck(options);
+          break;
+        case "selectOption":
+          await locatorInstance.selectOption(args[0], options);
+          break;
+        case "press":
+          if (args.length === 0 || typeof args[0] !== "string") {
+            return { success: false, error: "Press action requires a key string." };
+          }
+          await locatorInstance.press(args[0], options);
+          break;
+        case "focus":
+          await locatorInstance.focus(options);
+          break;
+        case "scrollIntoView":
+          await locatorInstance.scrollIntoViewIfNeeded(options);
+          break;
+        default:
+          return { success: false, error: `Unsupported action: ${action}` };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message || String(err) };
+    }
+  }
+  async executeExtensionSandbox(pageId, locatorStr, userCode, timeoutMs = 5e3) {
+    const page = this.getPage(pageId);
+    if (!page) {
+      return { success: false, log: [], error: "Page not found." };
+    }
+    const logs = [];
+    const customConsole = {
+      log: (...args) => logs.push(args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ")),
+      error: (...args) => logs.push("[ERROR] " + args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ")),
+      warn: (...args) => logs.push("[WARN] " + args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "))
+    };
+    try {
+      let locatorInstance = void 0;
+      if (locatorStr && locatorStr.trim()) {
+        const parsedSteps = parseLocator(locatorStr);
+        if (parsedSteps.length > 0) {
+          locatorInstance = constructLocator(page, parsedSteps);
+        }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const fn = new Function(
+        "locator",
+        "e",
+        "page",
+        "console",
+        "sleep",
+        `return (async () => {
+          ${userCode}
+        })()`
+      );
+      await Promise.race([
+        fn(locatorInstance, locatorInstance, page, customConsole, sleep),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Custom code execution timed out after ${timeoutMs}ms.`)), timeoutMs))
+      ]);
+      return { success: true, log: logs };
+    } catch (err) {
+      return { success: false, log: logs, error: err.message || String(err) };
+    }
+  }
+  prepareWorkspaceScript(workspaceRoot, userCode, cdpUrl, targetUrl, isPlaywrightTest, attachCdp, activeFilePath) {
+    const fs2 = require("fs");
+    const path2 = require("path");
+    let isTypeScript = true;
+    if (activeFilePath) {
+      if (activeFilePath.endsWith(".js") || activeFilePath.endsWith(".jsx") || activeFilePath.endsWith(".mjs")) {
+        isTypeScript = false;
+      } else if (activeFilePath.endsWith(".ts") || activeFilePath.endsWith(".tsx") || activeFilePath.endsWith(".mts")) {
+        isTypeScript = true;
+      }
+    } else {
+      const hasTsConfig = fs2.existsSync(path2.join(workspaceRoot, "tsconfig.json"));
+      const hasPlaywrightTs = fs2.existsSync(path2.join(workspaceRoot, "playwright.config.ts"));
+      isTypeScript = hasTsConfig || hasPlaywrightTs;
+    }
+    const ext = isTypeScript ? "ts" : "js";
+    const fileContent = generateWorkspaceScriptContent(
+      userCode,
+      isPlaywrightTest ? "playwright-test" : "standalone",
+      attachCdp,
+      cdpUrl,
+      targetUrl,
+      isTypeScript
+    );
+    const fileName = isPlaywrightTest ? `locator-lens-sandbox.spec.${ext}` : `locator-lens-sandbox.${ext}`;
+    let targetDir = workspaceRoot;
+    if (isPlaywrightTest) {
+      const findFirstSpecDir = (dir) => {
+        try {
+          const files = fs2.readdirSync(dir);
+          const dirsToSearch = [];
+          for (const file of files) {
+            if (file === "node_modules" || file === ".git" || file === ".vscode" || file === "dist" || file === "build") {
+              continue;
+            }
+            const fullPath = path2.join(dir, file);
+            try {
+              const stat = fs2.statSync(fullPath);
+              if (stat.isDirectory()) {
+                dirsToSearch.push(fullPath);
+              } else if ((file.endsWith(".spec.ts") || file.endsWith(".spec.js") || file.endsWith(".test.ts") || file.endsWith(".test.js")) && !file.includes("locator-lens-sandbox")) {
+                return dir;
+              }
+            } catch {
+            }
+          }
+          for (const subDir of dirsToSearch) {
+            const found = findFirstSpecDir(subDir);
+            if (found) return found;
+          }
+        } catch {
+        }
+        return null;
+      };
+      let resolvedSpecDir = null;
+      if (activeFilePath && activeFilePath.startsWith(workspaceRoot) && (activeFilePath.endsWith(".spec.ts") || activeFilePath.endsWith(".spec.js") || activeFilePath.endsWith(".test.ts") || activeFilePath.endsWith(".test.js"))) {
+        resolvedSpecDir = path2.dirname(activeFilePath);
+      }
+      if (!resolvedSpecDir) {
+        resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+      }
+      if (resolvedSpecDir) {
+        targetDir = resolvedSpecDir;
+      } else {
+        let configTestDir = void 0;
+        const configFiles = ["playwright.config.ts", "playwright.config.js"];
+        for (const configFile of configFiles) {
+          const configPath = path2.join(workspaceRoot, configFile);
+          if (fs2.existsSync(configPath)) {
+            try {
+              const content = fs2.readFileSync(configPath, "utf8");
+              const match = content.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+              if (match && match[1]) {
+                configTestDir = match[1].trim();
+                break;
+              }
+            } catch (e) {
+              console.error("Failed to read playwright config:", e);
+            }
+          }
+        }
+        if (configTestDir) {
+          const resolvedTestDir = path2.resolve(workspaceRoot, configTestDir);
+          if (fs2.existsSync(resolvedTestDir) && fs2.statSync(resolvedTestDir).isDirectory()) {
+            targetDir = resolvedTestDir;
+          }
+        } else {
+          const commonDirs = ["tests", "e2e", "specs", "test"];
+          for (const dirName of commonDirs) {
+            const fullDir = path2.join(workspaceRoot, dirName);
+            if (fs2.existsSync(fullDir) && fs2.statSync(fullDir).isDirectory()) {
+              targetDir = fullDir;
+              break;
+            }
+          }
+        }
+      }
+    }
+    const filePath = path2.join(targetDir, fileName);
+    fs2.writeFileSync(filePath, fileContent, "utf8");
+    return {
+      filePath,
+      cleanup: () => {
+        try {
+          if (fs2.existsSync(filePath)) {
+            fs2.unlinkSync(filePath);
+          }
+        } catch {
+        }
+      }
+    };
+  }
 };
+function generateWorkspaceScriptContent(userCode, mode, attachCdp, cdpUrl, targetUrl, isTypeScript = true) {
+  const lines = userCode.split("\n");
+  const importLines = [];
+  const bodyLines = [];
+  let inMultiLineImport = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("import ") || trimmed.startsWith("import{")) {
+      importLines.push(line);
+      if (trimmed.includes("{") && !trimmed.includes("}")) {
+        inMultiLineImport = true;
+      }
+    } else if (inMultiLineImport) {
+      importLines.push(line);
+      if (trimmed.includes("}")) {
+        inMultiLineImport = false;
+      }
+    } else {
+      bodyLines.push(line);
+    }
+  }
+  const userImports = importLines.join("\n");
+  const userBody = bodyLines.join("\n");
+  let fileContent = "";
+  const isPlaywrightTest = mode === "playwright-test";
+  if (isPlaywrightTest) {
+    let extendTarget = "base";
+    let modifiedImports = userImports;
+    const testImportRegex = /import\s+\{\s*([^}]*?\btest\b[^}]*?)\s*\}\s+from\s+['"]([^'"]+)['"]/g;
+    if (testImportRegex.test(userImports)) {
+      modifiedImports = userImports.replace(testImportRegex, (match, importsStr, path2) => {
+        const newImports = importsStr.replace(/\btest\b/g, "test as importedTest");
+        extendTarget = "importedTest";
+        return `import { ${newImports} } from '${path2}'`;
+      });
+    }
+    const hasTestDeclaration = /\btest\s*\(\s*['"`]/.test(userBody) || /\btest\.(only|skip|describe)\b/.test(userBody);
+    let testBodyContent = "";
+    if (hasTestDeclaration) {
+      testBodyContent = userBody;
+    } else {
+      testBodyContent = `test('Interactive Sandbox Test', async ({ page }) => {
+  ${userBody}
+});`;
+    }
+    if (attachCdp) {
+      fileContent = `// Playwright Live Playground Generated Spec
+import { test as base, expect } from '@playwright/test';
+${modifiedImports}
+
+const sleep = ${isTypeScript ? "(ms: number)" : "(ms)"} => new Promise(resolve => setTimeout(resolve, ms));
+
+const test = ${extendTarget}.extend({
+  page: async ({}, use) => {
+    let playChromium;
+    try { playChromium = require('@playwright/test').chromium; } catch {
+      try { playChromium = require('playwright').chromium; } catch {
+        try { playChromium = require('playwright-core').chromium; } catch {
+          throw new Error("Could not find Playwright package ('@playwright/test', 'playwright', or 'playwright-core') in your project dependencies.");
+        }
+      }
+    }
+    const browser = await playChromium.connectOverCDP('${cdpUrl || ""}');
+    try {
+      const contexts = browser.contexts();
+      let ${isTypeScript ? "page: any" : "page"};
+      const targetUrl = '${targetUrl || ""}';
+      for (const context of contexts) {
+        const pages = context.pages();
+        page = pages.find((p: any) => p.url() === targetUrl);
+        if (page) break;
+      }
+      if (!page) {
+        page = contexts[0]?.pages()[0];
+      }
+      if (!page) {
+        throw new Error("No active page found in browser session.");
+      }
+      await use(page);
+    } finally {
+      await browser.close();
+    }
+  }
+});
+
+${testBodyContent}
+`;
+    } else {
+      const hasTestImport = /\bimport\s+[^;]*?\btest\b/.test(userImports);
+      const importPrepend = hasTestImport ? "" : `import { test, expect } from '@playwright/test';
+`;
+      fileContent = `// Playwright Live Playground Generated Spec (Standard Runner)
+${importPrepend}${userImports}
+
+const sleep = ${isTypeScript ? "(ms: number)" : "(ms)"} => new Promise(resolve => setTimeout(resolve, ms));
+
+${testBodyContent}
+`;
+    }
+  } else {
+    if (attachCdp) {
+      fileContent = `// Playwright Live Playground Generated Standalone Script
+${userImports}
+
+async function main() {
+  let playChromium;
+  try { playChromium = require('@playwright/test').chromium; } catch {
+    try { playChromium = require('playwright').chromium; } catch {
+      try { playChromium = require('playwright-core').chromium; } catch {
+        throw new Error("Could not find Playwright package ('@playwright/test', 'playwright', or 'playwright-core') in your project dependencies.");
+      }
+    }
+  }
+  const browser = await playChromium.connectOverCDP('${cdpUrl || ""}');
+  try {
+    const contexts = browser.contexts();
+    let ${isTypeScript ? "page: any" : "page"};
+    const targetUrl = '${targetUrl || ""}';
+    for (const context of contexts) {
+      const pages = context.pages();
+      page = pages.find((p: any) => p.url() === targetUrl);
+      if (page) break;
+    }
+    if (!page) {
+      page = contexts[0]?.pages()[0];
+    }
+    if (!page) {
+      throw new Error("No active page found in browser session.");
+    }
+    
+    const sleep = ${isTypeScript ? "(ms: number)" : "(ms)"} => new Promise(resolve => setTimeout(resolve, ms));
+    
+    // User script body
+    ${userBody}
+    
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`;
+    } else {
+      fileContent = `// Playwright Live Playground Generated Standalone Script (Standard Node)
+${userImports}
+
+const sleep = ${isTypeScript ? "(ms: number)" : "(ms)"} => new Promise(resolve => setTimeout(resolve, ms));
+
+async function main() {
+  // User script body
+  ${userBody}
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`;
+    }
+  }
+  return fileContent;
+}
 
 // src/sidebarProvider.ts
 function findChrome() {
@@ -3087,12 +3497,12 @@ function findChrome() {
   throw new Error("Google Chrome was not found. Please install Google Chrome or configure a custom path in settings.");
 }
 function checkCDPReady(port) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 1e3 }, (res) => {
-      resolve(res.statusCode === 200);
+      resolve2(res.statusCode === 200);
     });
     req.on("error", () => {
-      resolve(false);
+      resolve2(false);
     });
     req.end();
   });
@@ -3103,7 +3513,7 @@ async function waitForCDP(port, timeoutMs = 15e3) {
     if (await checkCDPReady(port)) {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve2) => setTimeout(resolve2, 300));
   }
   throw new Error(`CDP server did not start on port ${port} within ${timeoutMs}ms.`);
 }
@@ -3118,7 +3528,7 @@ async function rmWithRetry(dirPath, maxAttempts = 3, delayMs = 200) {
       if (attempt === maxAttempts) {
         throw err;
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await new Promise((resolve2) => setTimeout(resolve2, delayMs));
     }
   }
 }
@@ -3132,6 +3542,7 @@ var SidebarProvider = class {
   activePageId;
   spawnedBrowser;
   tempProfileDir;
+  editorDocs = /* @__PURE__ */ new Map();
   resolveWebviewView(webviewView, context, _token) {
     this._view = webviewView;
     webviewView.webview.options = {
@@ -3205,7 +3616,12 @@ var SidebarProvider = class {
               await waitForCDP(port);
               const cdpUrl = `http://127.0.0.1:${port}`;
               const pages = await this.engine.connect(cdpUrl);
-              const activePageId = (_a = pages[0]) == null ? void 0 : _a.id;
+              const firstVisible = pages.find((p) => {
+                const url = p.url || "";
+                const title = (p.title || "").toLowerCase();
+                return !url.startsWith("chrome-devtools://") && !url.startsWith("devtools://") && !title.includes("developer tools") && !title.includes("devtools");
+              });
+              const activePageId = firstVisible ? firstVisible.id : (_a = pages[0]) == null ? void 0 : _a.id;
               this.activePageId = activePageId;
               webviewView.webview.postMessage({
                 type: "connect-status",
@@ -3240,7 +3656,12 @@ var SidebarProvider = class {
                 }
               }
               const pages = await this.engine.connect(data.cdpUrl);
-              const activePageId = (_b = pages[0]) == null ? void 0 : _b.id;
+              const firstVisible = pages.find((p) => {
+                const url = p.url || "";
+                const title = (p.title || "").toLowerCase();
+                return !url.startsWith("chrome-devtools://") && !url.startsWith("devtools://") && !title.includes("developer tools") && !title.includes("devtools");
+              });
+              const activePageId = firstVisible ? firstVisible.id : (_b = pages[0]) == null ? void 0 : _b.id;
               this.activePageId = activePageId;
               webviewView.webview.postMessage({
                 type: "connect-status",
@@ -3497,6 +3918,370 @@ var SidebarProvider = class {
             });
             break;
           }
+          case "perform-action": {
+            if (!this.activePageId) return;
+            const res = await this.engine.performAction(
+              this.activePageId,
+              data.locatorStr,
+              data.action,
+              data.args || [],
+              data.timeout || 5e3
+            );
+            webviewView.webview.postMessage({
+              type: "action-result",
+              action: data.action,
+              success: res.success,
+              error: res.error
+            });
+            break;
+          }
+          case "open-in-editor": {
+            try {
+              const editorId = data.editorId;
+              const content = data.content || "";
+              const mode = data.mode || "typescript";
+              let workspaceRoot = "";
+              if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+              } else {
+                workspaceRoot = os.tmpdir();
+              }
+              const activeEditor = vscode.window.activeTextEditor;
+              const activeFilePath = activeEditor ? activeEditor.document.uri.fsPath : void 0;
+              let isTypeScript = true;
+              if (activeFilePath) {
+                if (activeFilePath.endsWith(".js") || activeFilePath.endsWith(".jsx") || activeFilePath.endsWith(".mjs")) {
+                  isTypeScript = false;
+                } else if (activeFilePath.endsWith(".ts") || activeFilePath.endsWith(".tsx") || activeFilePath.endsWith(".mts")) {
+                  isTypeScript = true;
+                }
+              } else {
+                const hasTsConfig = fs.existsSync(path.join(workspaceRoot, "tsconfig.json"));
+                const hasPlaywrightTs = fs.existsSync(path.join(workspaceRoot, "playwright.config.ts"));
+                isTypeScript = hasTsConfig || hasPlaywrightTs;
+              }
+              const ext = isTypeScript ? "ts" : "js";
+              let targetDir = workspaceRoot;
+              if (activeFilePath && activeFilePath.startsWith(workspaceRoot)) {
+                try {
+                  const dir = path.dirname(activeFilePath);
+                  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+                    targetDir = dir;
+                  }
+                } catch {
+                }
+              } else {
+                const findFirstSpecDir = (dir) => {
+                  try {
+                    const files = fs.readdirSync(dir);
+                    const dirsToSearch = [];
+                    for (const file of files) {
+                      if (file === "node_modules" || file === ".git" || file === ".vscode" || file === "dist" || file === "build") {
+                        continue;
+                      }
+                      const fullPath = path.join(dir, file);
+                      try {
+                        const stat = fs.statSync(fullPath);
+                        if (stat.isDirectory()) {
+                          dirsToSearch.push(fullPath);
+                        } else if ((file.endsWith(".spec.ts") || file.endsWith(".spec.js") || file.endsWith(".test.ts") || file.endsWith(".test.js")) && !file.includes("locator-lens-sandbox")) {
+                          return dir;
+                        }
+                      } catch {
+                      }
+                    }
+                    for (const subDir of dirsToSearch) {
+                      const found = findFirstSpecDir(subDir);
+                      if (found) return found;
+                    }
+                  } catch {
+                  }
+                  return null;
+                };
+                const resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+                if (resolvedSpecDir) {
+                  targetDir = resolvedSpecDir;
+                } else {
+                  let configTestDir = void 0;
+                  const configFiles = ["playwright.config.ts", "playwright.config.js"];
+                  for (const configFile of configFiles) {
+                    const configPath = path.join(workspaceRoot, configFile);
+                    if (fs.existsSync(configPath)) {
+                      try {
+                        const content2 = fs.readFileSync(configPath, "utf8");
+                        const match = content2.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+                        if (match && match[1]) {
+                          configTestDir = match[1].trim();
+                          break;
+                        }
+                      } catch {
+                      }
+                    }
+                  }
+                  if (configTestDir) {
+                    const resolvedTestDir = path.resolve(workspaceRoot, configTestDir);
+                    if (fs.existsSync(resolvedTestDir) && fs.statSync(resolvedTestDir).isDirectory()) {
+                      targetDir = resolvedTestDir;
+                    }
+                  } else {
+                    const commonDirs = ["tests", "e2e", "specs", "test"];
+                    for (const dirName of commonDirs) {
+                      const fullDir = path.join(workspaceRoot, dirName);
+                      if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+                        targetDir = fullDir;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+              if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+              }
+              const rootGitIgnore = path.join(workspaceRoot, ".gitignore");
+              const ignorePatterns = [
+                "# Playwright Live Playground Temporary Files",
+                "**/playground-*.ts",
+                "**/playground-*.js",
+                "**/locator-lens-sandbox.spec.ts",
+                "**/locator-lens-sandbox.spec.js",
+                "**/locator-lens-sandbox.ts",
+                "**/locator-lens-sandbox.js"
+              ];
+              if (fs.existsSync(rootGitIgnore)) {
+                try {
+                  const gitIgnoreContent = fs.readFileSync(rootGitIgnore, "utf8");
+                  const linesToAdd = ignorePatterns.filter((pattern) => !gitIgnoreContent.includes(pattern));
+                  if (linesToAdd.length > 0) {
+                    fs.writeFileSync(rootGitIgnore, gitIgnoreContent.trim() + "\n\n" + linesToAdd.join("\n") + "\n", "utf8");
+                  }
+                } catch {
+                }
+              } else {
+                const vscodeDir = path.join(workspaceRoot, ".vscode");
+                if (!fs.existsSync(vscodeDir)) {
+                  fs.mkdirSync(vscodeDir, { recursive: true });
+                }
+                const gitIgnorePath = path.join(vscodeDir, ".gitignore");
+                try {
+                  let gitIgnoreContent = "";
+                  if (fs.existsSync(gitIgnorePath)) {
+                    gitIgnoreContent = fs.readFileSync(gitIgnorePath, "utf8");
+                  }
+                  const linesToAdd = ignorePatterns.filter((pattern) => !gitIgnoreContent.includes(pattern));
+                  if (linesToAdd.length > 0) {
+                    fs.writeFileSync(gitIgnorePath, gitIgnoreContent.trim() + "\n\n" + linesToAdd.join("\n") + "\n", "utf8");
+                  }
+                } catch {
+                }
+              }
+              const fileName = `playground-${editorId}.${ext}`;
+              const filePath = path.join(targetDir, fileName);
+              let finalContent = content;
+              if (!content.includes("/// <reference types=")) {
+                if (editorId === "element-script") {
+                  finalContent = `/// <reference types="@playwright/test" />
+// Variable 'e' is the matched Locator, and 'page' is the active Page.
+
+` + content;
+                } else if (editorId === "browser-script") {
+                  finalContent = `/// <reference types="@playwright/test" />
+// Variable 'page' is the active Page.
+
+` + content;
+                } else {
+                  finalContent = `/// <reference types="@playwright/test" />
+
+` + content;
+                }
+              }
+              fs.writeFileSync(filePath, finalContent, "utf8");
+              const uri = vscode.Uri.file(filePath);
+              this.editorDocs.set(editorId, uri);
+              const doc = await vscode.workspace.openTextDocument(uri);
+              await vscode.window.showTextDocument(doc, {
+                viewColumn: vscode.ViewColumn.Beside,
+                preserveFocus: false,
+                preview: false
+              });
+              webviewView.webview.postMessage({
+                type: "editor-opened",
+                editorId
+              });
+            } catch (err) {
+              vscode.window.showErrorMessage(`Failed to open editor: ${err.message}`);
+            }
+            break;
+          }
+          case "execute-sandbox-code": {
+            if (!this.activePageId) return;
+            let userCode = data.userCode || "";
+            const editorId = data.locatorStr ? "element-script" : "browser-script";
+            const editorUri = this.editorDocs.get(editorId);
+            if (editorUri) {
+              const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === editorUri.fsPath);
+              if (doc) {
+                userCode = doc.getText();
+              }
+            }
+            const res = await this.engine.executeExtensionSandbox(
+              this.activePageId,
+              data.locatorStr,
+              userCode,
+              data.timeout || 5e3
+            );
+            webviewView.webview.postMessage({
+              type: "sandbox-result",
+              success: res.success,
+              log: res.log,
+              error: res.error
+            });
+            break;
+          }
+          case "execute-workspace-script": {
+            const attachCdp = !!data.attachCdp;
+            let targetUrl = "";
+            let defaultPort = 9222;
+            let cdpUrl = "";
+            if (attachCdp) {
+              if (!this.activePageId) {
+                webviewView.webview.postMessage({
+                  type: "workspace-script-finished",
+                  success: false,
+                  error: "Please connect to a browser page/tab first to attach CDP execution."
+                });
+                return;
+              }
+              const page = this.engine.getPage(this.activePageId);
+              if (!page) {
+                webviewView.webview.postMessage({
+                  type: "workspace-script-finished",
+                  success: false,
+                  error: "Active page connection not found."
+                });
+                return;
+              }
+              targetUrl = page.url();
+              const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
+              defaultPort = config.get("debuggingPort", 9222);
+              cdpUrl = data.cdpUrl || `http://127.0.0.1:${defaultPort}`;
+            }
+            let workspaceRoot = "";
+            if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+              workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            } else {
+              webviewView.webview.postMessage({
+                type: "workspace-script-finished",
+                success: false,
+                error: "Workspace is required to run workspace scripts."
+              });
+              return;
+            }
+            let userCode = data.userCode || "";
+            const editorUri = this.editorDocs.get("workspace-script");
+            if (editorUri) {
+              const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === editorUri.fsPath);
+              if (doc) {
+                userCode = doc.getText();
+              }
+            }
+            const activeEditor = vscode.window.activeTextEditor;
+            const activeFilePath = activeEditor ? activeEditor.document.uri.fsPath : void 0;
+            const isPlaywrightTest = data.mode === "playwright-test";
+            const { filePath, cleanup } = this.engine.prepareWorkspaceScript(
+              workspaceRoot,
+              userCode,
+              cdpUrl,
+              targetUrl,
+              isPlaywrightTest,
+              attachCdp,
+              activeFilePath
+            );
+            let runCmd = (data.runnerCommand || "").trim();
+            if (!runCmd) {
+              if (isPlaywrightTest) {
+                runCmd = "npx playwright test";
+              } else {
+                runCmd = filePath.endsWith(".ts") ? "npx tsx" : "node";
+              }
+            }
+            const relativePath = path.relative(workspaceRoot, filePath).replace(/\\/g, "/");
+            let fullCmd = "";
+            if (isPlaywrightTest) {
+              fullCmd = `${runCmd} "${relativePath}" --reporter=line`;
+            } else {
+              fullCmd = `${runCmd} "${relativePath}"`;
+            }
+            webviewView.webview.postMessage({
+              type: "sandbox-log",
+              log: `[INFO] Launching script runner: ${fullCmd}
+`,
+              stream: "info"
+            });
+            const cp = child_process.spawn(fullCmd, {
+              cwd: workspaceRoot,
+              shell: true,
+              env: {
+                ...process.env,
+                PLAYWRIGHT_CHROMIUM_ATTACH_TO_PORT: String(defaultPort)
+              }
+            });
+            let processKilled = false;
+            const timeoutMs = data.timeout || 15e3;
+            const timer = setTimeout(() => {
+              processKilled = true;
+              cp.kill();
+              webviewView.webview.postMessage({
+                type: "sandbox-log",
+                log: `[ERROR] Execution timed out after ${timeoutMs}ms.
+`,
+                stream: "stderr"
+              });
+            }, timeoutMs);
+            cp.stdout.on("data", (chunk) => {
+              if (processKilled) return;
+              webviewView.webview.postMessage({
+                type: "sandbox-log",
+                log: chunk.toString(),
+                stream: "stdout"
+              });
+            });
+            cp.stderr.on("data", (chunk) => {
+              if (processKilled) return;
+              webviewView.webview.postMessage({
+                type: "sandbox-log",
+                log: chunk.toString(),
+                stream: "stderr"
+              });
+            });
+            cp.on("error", (err) => {
+              clearTimeout(timer);
+              cleanup();
+              webviewView.webview.postMessage({
+                type: "sandbox-log",
+                log: `[ERROR] Failed to start process: ${err.message}
+`,
+                stream: "stderr"
+              });
+              webviewView.webview.postMessage({
+                type: "workspace-script-finished",
+                success: false,
+                code: 1,
+                error: err.message
+              });
+            });
+            cp.on("close", (code) => {
+              clearTimeout(timer);
+              cleanup();
+              if (processKilled) return;
+              webviewView.webview.postMessage({
+                type: "workspace-script-finished",
+                success: code === 0,
+                code
+              });
+            });
+            break;
+          }
         }
       } catch (err) {
         console.error("Unhandled error in webview message handler:", err);
@@ -3517,6 +4302,40 @@ var SidebarProvider = class {
         }
       }
     });
+    const docChangeDisposable = vscode.workspace.onDidChangeTextDocument((e) => {
+      for (const [editorId, uri] of this.editorDocs.entries()) {
+        if (e.document.uri.fsPath === uri.fsPath) {
+          try {
+            webviewView.webview.postMessage({
+              type: "editor-content-synced",
+              editorId,
+              content: e.document.getText()
+            });
+          } catch {
+          }
+        }
+      }
+    });
+    const docCloseDisposable = vscode.workspace.onDidCloseTextDocument((doc) => {
+      for (const [editorId, uri] of this.editorDocs.entries()) {
+        if (doc.uri.fsPath === uri.fsPath) {
+          this.editorDocs.delete(editorId);
+          try {
+            webviewView.webview.postMessage({
+              type: "editor-closed",
+              editorId
+            });
+          } catch {
+          }
+          try {
+            if (fs.existsSync(doc.uri.fsPath)) {
+              fs.unlinkSync(doc.uri.fsPath);
+            }
+          } catch {
+          }
+        }
+      }
+    });
     const configChangeDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("playwright-locator-toolkit.enableBetaFeatures")) {
         const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
@@ -3529,6 +4348,8 @@ var SidebarProvider = class {
     });
     webviewView.onDidDispose(() => {
       configChangeDisposable.dispose();
+      docChangeDisposable.dispose();
+      docCloseDisposable.dispose();
       this.engine.softDisconnect();
     });
   }

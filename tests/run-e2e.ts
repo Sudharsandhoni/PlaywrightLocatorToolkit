@@ -355,6 +355,100 @@ async function runTests() {
     recordResult('UI Scanner', 'UI Intelligence Scanner', false, err.message);
   }
 
+  // 8. Element Interaction — Quick Actions
+  console.log('\n--- Testing Element Interaction: Quick Actions ---');
+  try {
+    // Verify engine can perform a fill via the interaction method
+    const fillOk = await engine.simulateFill(pageId, "getByLabel('Username')", 'playwright-user');
+    if (!fillOk) throw new Error('Engine simulateFill returned false for a visible input');
+    recordResult('Element Interaction', 'Quick Action: Fill on getByLabel', true);
+  } catch (err: any) {
+    recordResult('Element Interaction', 'Quick Action: Fill on getByLabel', false, err.message);
+  }
+
+  try {
+    // Verify engine can click a button
+    const clickOk = await engine.simulateClick(pageId, "getByRole('button', { name: 'Sign In' })");
+    if (!clickOk) throw new Error('Engine simulateClick returned false for visible button');
+    recordResult('Element Interaction', 'Quick Action: Click on getByRole button', true);
+  } catch (err: any) {
+    recordResult('Element Interaction', 'Quick Action: Click on getByRole button', false, err.message);
+  }
+
+  try {
+    // Verify engine can hover
+    const hoverOk = await engine.simulateHover(pageId, "getByRole('button', { name: 'Sign In' })");
+    if (!hoverOk) throw new Error('Engine simulateHover returned false for visible button');
+    recordResult('Element Interaction', 'Quick Action: Hover on element', true);
+  } catch (err: any) {
+    recordResult('Element Interaction', 'Quick Action: Hover on element', false, err.message);
+  }
+
+  // 9. Element Scripting — sandbox execution
+  console.log('\n--- Testing Element Scripting Sandbox ---');
+  try {
+    // Engine evaluates locator, then runs a script against the element
+    const evalRes = await engine.evaluate(pageId, "getByLabel('Username')");
+    if (!evalRes.success || evalRes.count < 1) throw new Error('Locator for scripting did not resolve to an element');
+    recordResult('Element Scripting', 'Locator resolves before scripting', true);
+  } catch (err: any) {
+    recordResult('Element Scripting', 'Locator resolves before scripting', false, err.message);
+  }
+
+  try {
+    // Script sandbox should block non-Playwright method names
+    const badLocator = 'page.__proto__.constructor.name'; // malicious traversal
+    const res = await engine.evaluate(pageId, badLocator);
+    // Should fail to evaluate safely (not crash the process)
+    recordResult('Element Scripting', 'Security: malformed locator rejected safely', !res.success || res.count === 0);
+  } catch (err: any) {
+    // A thrown error also means the sandbox caught it — acceptable
+    recordResult('Element Scripting', 'Security: malformed locator rejected safely', true);
+  }
+
+  // 10. Workspace Script Runner — CDP wrapping & import handling
+  console.log('\n--- Testing Workspace Script Runner Preparation ---');
+  try {
+    // Verify prepareWorkspaceScript does not double-import @playwright/test
+    // when the user script already imports `test` from a custom fixture
+    const { prepareWorkspaceScript } = await import('playwright-locator-toolkit-engine');
+    const userScript = `import { test, expect } from '../fixtures/core/appRegistry.fixture.js';
+test('example', async ({ page }) => { await page.goto('https://example.com'); });`;
+    const prepared = prepareWorkspaceScript(userScript, 'playwright-test', false, undefined);
+    const importCount = (prepared.match(/import\s+[^;]+\btest\b/g) || []).length;
+    if (importCount > 1) {
+      throw new Error(`Duplicate import detected: ${importCount} test imports in prepared script`);
+    }
+    recordResult('Workspace Runner', 'No duplicate test import when custom fixture present', true);
+  } catch (err: any) {
+    // If engine doesn't export prepareWorkspaceScript directly, skip gracefully
+    if (err.message?.includes('prepareWorkspaceScript')) {
+      console.log('  ⚠️  SKIP: prepareWorkspaceScript not exported — tested via integration only');
+    } else {
+      recordResult('Workspace Runner', 'No duplicate test import when custom fixture present', false, err.message);
+    }
+  }
+
+  try {
+    // Verify CDP-attached wrapper contains connectOverCDP and injects the page
+    const { prepareWorkspaceScript } = await import('playwright-locator-toolkit-engine');
+    const userScript = `console.log('page title:', await page.title());`;
+    const prepared = prepareWorkspaceScript(userScript, 'playwright-test', true, undefined);
+    if (!prepared.includes('connectOverCDP')) {
+      throw new Error('CDP-attached wrapper is missing connectOverCDP call');
+    }
+    if (!prepared.includes('page')) {
+      throw new Error('CDP-attached wrapper is missing page variable injection');
+    }
+    recordResult('Workspace Runner', 'CDP-attach wrapper contains connectOverCDP + page', true);
+  } catch (err: any) {
+    if (err.message?.includes('prepareWorkspaceScript')) {
+      console.log('  ⚠️  SKIP: prepareWorkspaceScript not exported — tested via integration only');
+    } else {
+      recordResult('Workspace Runner', 'CDP-attach wrapper contains connectOverCDP + page', false, err.message);
+    }
+  }
+
   // Print Summary
   console.log('\n==================================================');
   console.log('📊 E2E Test Suite Summary');

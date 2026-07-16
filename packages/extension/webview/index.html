@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource}; img-src ${cspSource} https: data:; connect-src ${cspSource} http: https: ws: wss:;">
-  <title>Playwright Locator Toolkit</title>
+  <title>Playwright Live Playground (Debug Assistant)</title>
   <link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
@@ -13,20 +13,20 @@
     <header class="app-header">
       <div class="logo">
         <img src="${logoUri}" alt="Logo" class="logo-image">
-        <span class="gradient-text">Locator Toolkit</span>
+        <span class="gradient-text">Live Playground</span>
       </div>
     </header>
 
     <!-- CDP Connection Card -->
     <section class="card connection-card">
       <div class="card-header">
-        <h3>CDP Connection</h3>
+        <h3>Browser Connection</h3>
         <span id="connection-status" class="status-indicator disconnected">Disconnected</span>
       </div>
       
       <div class="connection-inputs" id="connection-inputs-group">
         <div class="input-group">
-          <label for="cdp-url">CDP URL</label>
+          <label for="cdp-url">Debug URL</label>
           <input type="text" id="cdp-url" value="http://127.0.0.1:9222" placeholder="http://127.0.0.1:9222">
         </div>
         <div style="display: flex; gap: 8px; width: 100%;">
@@ -47,62 +47,150 @@
       </div>
     </section>
 
-    <!-- Playground Input Card -->
-    <section class="card playground-card">
-      <div class="card-header">
-        <h3>Locator Playground</h3>
-        <div class="playground-controls">
-          <button id="undo-btn" class="btn-icon" disabled title="Undo (Ctrl+Z)">↶</button>
-          <button id="redo-btn" class="btn-icon" disabled title="Redo (Ctrl+Y)">↷</button>
-          <button id="copy-playground-btn" class="btn-icon" title="Copy Locator Expression">📋</button>
-          <button id="history-btn" class="btn-icon" title="Recent History">🕒</button>
-          <div id="history-dropdown" class="history-dropdown hidden"></div>
-        </div>
-      </div>
-      
-      <div class="input-group" style="position: relative;">
-        <label for="locator-input">Locator Expression</label>
-        <textarea id="locator-input" placeholder="getByRole('button', { name: 'Submit' })" spellcheck="false" rows="3"></textarea>
-        <div id="autocomplete-list" class="autocomplete-list hidden"></div>
-        <span class="tip">Supports page.getBy... or direct shorthand like getByRole(...)</span>
-      </div>
-
-      <div class="actions-group">
-        <button id="evaluate-btn" class="btn btn-primary btn-full" disabled title="Connect to browser">Evaluate & Highlight</button>
-        <button id="clear-hl-btn" class="btn btn-secondary" disabled title="Clear Highlights">Clear</button>
-      </div>
-    </section>
-
-    <!-- Loading Spinner -->
-    <div id="loader" class="loader-container hidden">
-      <div class="spinner"></div>
-      <span>Evaluating locator...</span>
+    <!-- Main Tabs -->
+    <div class="main-tabs" id="main-tabs">
+      <button class="main-tab-btn active" data-tab="tab-locator">Locator</button>
+      <button class="main-tab-btn" data-tab="tab-page-script">Browser Scripts</button>
+      <button class="main-tab-btn" data-tab="tab-workspace-sync">Run in Workspace</button>
     </div>
 
-    <!-- Error Display -->
-    <div id="error-card" class="error-card hidden">
-      <div class="error-header">
-        <span class="error-icon">⚠</span>
-        <span id="error-title">Error</span>
+    <!-- Tab 1: Locator Content -->
+    <div id="tab-locator" class="main-tab-content active">
+      <!-- Connection Warning Overlay if CDP is not connected -->
+      <div class="connection-overlay hidden" id="locator-connection-overlay">
+        <span class="overlay-icon">🔌</span>
+        <p>Browser Connection Required</p>
+        <span>Connect to an inspected tab above to start validating locators.</span>
       </div>
-      <p id="error-message"></p>
-    </div>
 
-    <!-- Evaluation Results Panel -->
-    <div id="results-panel" class="results-panel hidden">
-      
-      <!-- Match Banner -->
-      <div class="match-banner" id="match-banner">
-        <div class="match-info">
-          <span class="match-count" id="res-match-count">0</span>
-          <span class="match-text" id="res-match-text">matches found</span>
+      <!-- Playground Input Card -->
+      <section class="card playground-card">
+        <div class="card-header">
+          <h3>Locator Playground</h3>
+          <div class="playground-controls">
+            <button id="undo-btn" class="btn-icon" disabled title="Undo (Ctrl+Z)">↶</button>
+            <button id="redo-btn" class="btn-icon" disabled title="Redo (Ctrl+Y)">↷</button>
+            <button id="copy-playground-btn" class="btn-icon" title="Copy Locator Expression">📋</button>
+            <button id="history-btn" class="btn-icon" title="Recent History">🕒</button>
+            <div id="history-dropdown" class="history-dropdown hidden"></div>
+          </div>
         </div>
-        <div class="match-navigation hidden" id="match-navigation">
-          <button id="prev-btn" class="nav-btn" title="Previous match">▲</button>
-          <span id="nav-index">1/1</span>
-          <button id="next-btn" class="nav-btn" title="Next match">▼</button>
+        
+        <div class="input-group" style="position: relative;">
+          <label for="locator-input">Locator Expression</label>
+          <textarea id="locator-input" placeholder="getByRole('button', { name: 'Submit' })" spellcheck="false" rows="3"></textarea>
+          <div id="autocomplete-list" class="autocomplete-list hidden"></div>
+          <span class="tip">Supports page.getBy... or direct shorthand like getByRole(...)</span>
         </div>
+
+        <div class="actions-group">
+          <button id="evaluate-btn" class="btn btn-primary btn-full" disabled title="Connect to browser">Evaluate & Highlight</button>
+          <button id="clear-hl-btn" class="btn btn-secondary" disabled title="Clear Highlights">Clear</button>
+        </div>
+      </section>
+
+      <!-- Loading Spinner -->
+      <div id="loader" class="loader-container hidden">
+        <div class="spinner"></div>
+        <span>Evaluating locator...</span>
       </div>
+
+      <!-- Error Display -->
+      <div id="error-card" class="error-card hidden">
+        <div class="error-header">
+          <span class="error-icon">⚠</span>
+          <span id="error-title">Error</span>
+        </div>
+        <p id="error-message"></p>
+      </div>
+
+      <!-- Evaluation Results Panel -->
+      <div id="results-panel" class="results-panel hidden">
+        
+        <!-- Match Banner -->
+        <div class="match-banner" id="match-banner">
+          <div class="match-info">
+            <span class="match-count" id="res-match-count">0</span>
+            <span class="match-text" id="res-match-text">matches found</span>
+          </div>
+          <div class="match-navigation hidden" id="match-navigation">
+            <button id="prev-btn" class="nav-btn" title="Previous match">▲</button>
+            <span id="nav-index">1/1</span>
+            <button id="next-btn" class="nav-btn" title="Next match">▼</button>
+          </div>
+          <button id="interact-toggle-btn" class="btn btn-primary btn-sm hidden" style="margin-left: auto;">Interact</button>
+        </div>
+        
+        <!-- Element Interaction Card -->
+        <section class="card interaction-card hidden" id="interaction-card">
+          <div class="card-header">
+            <h3>Element Interaction</h3>
+            <span class="badge" id="interaction-status-badge">Ready</span>
+          </div>
+
+          <div class="interaction-tabs">
+            <button class="interaction-tab-btn active" data-tab="int-tab-quick">Quick Actions</button>
+            <button class="interaction-tab-btn" data-tab="int-tab-script">Element Scripting</button>
+          </div>
+
+          <!-- Tab 1: Quick Actions -->
+          <div class="interaction-tab-content active" id="int-tab-quick">
+            <div class="interaction-grid">
+              <div class="action-row">
+                <button id="int-btn-click" class="btn btn-secondary btn-sm" title="Click on the matched element">Click</button>
+                <button id="int-btn-hover" class="btn btn-secondary btn-sm" title="Hover over the matched element">Hover</button>
+                <button id="int-btn-focus" class="btn btn-secondary btn-sm" title="Focus on the matched element">Focus</button>
+              </div>
+              <div class="action-row">
+                <button id="int-btn-check" class="btn btn-secondary btn-sm" title="Check checkbox or radio">Check</button>
+                <button id="int-btn-uncheck" class="btn btn-secondary btn-sm" title="Uncheck checkbox or radio">Uncheck</button>
+                <button id="int-btn-clear" class="btn btn-secondary btn-sm" title="Clear input text field">Clear</button>
+                <button id="int-btn-scroll" class="btn btn-secondary btn-sm" title="Scroll element into view">Scroll To</button>
+              </div>
+              
+              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
+                <div class="input-action-group">
+                  <input type="text" id="int-input-fill" placeholder="Text to fill...">
+                  <button id="int-btn-fill" class="btn btn-primary btn-sm">Fill</button>
+                </div>
+                <div class="input-action-group">
+                  <input type="text" id="int-input-select" placeholder="Option label, value, or index...">
+                  <button id="int-btn-select" class="btn btn-primary btn-sm" title="Select dropdown option">Select Option</button>
+                </div>
+                <div class="input-action-group">
+                  <input type="text" id="int-input-press" placeholder="e.g. Enter, Escape, ArrowDown...">
+                  <button id="int-btn-press" class="btn btn-primary btn-sm" title="Press a keyboard key">Press Key</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 2: Element Scripting -->
+          <div class="interaction-tab-content" id="int-tab-script">
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <div class="input-group">
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                  <label for="int-textarea-script">Custom Element Script</label>
+                  <button id="int-script-open-editor-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Open in VS Code editor for full IntelliSense">Open in Editor ↗</button>
+                </div>
+                <div id="element-script-editor-badge" class="editor-open-badge hidden">✏️ Editing in VS Code editor</div>
+                <textarea id="int-textarea-script" placeholder="// Use 'e' to interact with the matched element&#10;await e.click();&#10;await sleep(500);&#10;await e.fill('Updated text!');" rows="5" spellcheck="false" style="font-family: monospace; font-size: 11px;"></textarea>
+                <span class="tip">💡 Use <code>e</code> to reference the matched locator (e.g., <code>await e.click()</code>).</span>
+                <span class="tip" style="margin-top: 4px; color: var(--accent-start);">💡 If you need more interaction with other elements, use the <a href="#" id="link-to-page-scripting" style="color: var(--accent-start); text-decoration: underline; font-weight: 600;">Browser Scripts</a> tab.</span>
+              </div>
+              <button id="int-btn-run-script" class="btn btn-primary btn-sm" style="width: 100%;">▶ Run Script</button>
+            </div>
+          </div>
+
+          <!-- Interaction Error Display -->
+          <div id="interaction-error-display" class="error-card hidden" style="margin-top: 10px; padding: 8px 12px;">
+            <div class="error-header">
+              <span class="error-icon">⚠</span>
+              <span style="font-weight: bold; font-size: 11px;">Interaction Error</span>
+            </div>
+            <p id="interaction-error-message" style="margin: 4px 0 0 0; font-size: 11px; line-height: 1.3; font-family: monospace; white-space: pre-wrap; color: var(--color-danger);"></p>
+          </div>
+        </section>
 
       <!-- Failure Analysis Card (Phase 6) -->
       <section class="card failure-card hidden" id="failure-analysis-card">
@@ -381,9 +469,146 @@
 
       </div>
     </section>
+  </div> <!-- End of tab-locator -->
 
+  <!-- Tab 2: Page Scripting Content -->
+  <div id="tab-page-script" class="main-tab-content">
+    <!-- Connection Warning Overlay if CDP is not connected -->
+    <div class="connection-overlay" id="page-script-connection-overlay">
+      <span class="overlay-icon">🔌</span>
+      <p>Browser Connection Required</p>
+      <span>Connect to a browser tab above to start scripting.</span>
+    </div>
+
+    <section class="card">
+      <div class="card-header">
+        <h3>Browser Script Editor</h3>
+        <span class="badge" id="page-script-status-badge">Ready</span>
+      </div>
+      
+      <div class="input-group">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <label for="page-textarea-script">Script</label>
+          <button id="page-script-open-editor-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Open in VS Code editor for full IntelliSense">Open in Editor ↗</button>
+        </div>
+        <div id="browser-script-editor-badge" class="editor-open-badge hidden">✏️ Editing in VS Code editor</div>
+        <textarea id="page-textarea-script" placeholder="// Write async commands against the live browser page&#10;// Use the global 'page' variable (Playwright Page instance)&#10;&#10;await page.goto('https://github.com/');&#10;await page.fill('input[type=&quot;text&quot;]', 'Playwright');&#10;await sleep(500);&#10;console.log('Current URL: ' + page.url());" rows="10" spellcheck="false"></textarea>
+        <span class="tip">💡 Runs inside a secure sandbox using your connected browser page.</span>
+      </div>
+
+      <div class="actions-group-row">
+        <div class="input-group" style="flex: 1;">
+          <label for="page-input-timeout">Timeout (ms)</label>
+          <input type="number" id="page-input-timeout" value="5000" min="500" step="500">
+        </div>
+        <button id="page-btn-run" class="btn btn-primary" style="margin-top: 18px;">▶ Run Script</button>
+      </div>
+
+      <div class="interaction-console-section" style="margin-top: 12px;">
+        <div class="console-toolbar">
+          <span style="font-size: 10px; font-weight: bold; color: var(--text-muted);">OUTPUT</span>
+          <div style="display: flex; gap: 4px;">
+            <button class="btn-icon-copy console-expand-btn" data-target="page-console-output" style="font-size: 9px; padding: 2px 6px;" title="Expand / Collapse">⤢</button>
+            <button id="page-btn-clear-console" class="btn-icon-copy" style="font-size: 9px; padding: 2px 6px;">Clear</button>
+          </div>
+        </div>
+        <div class="interaction-console" id="page-console-output">
+          <div class="console-placeholder">Script output will appear here...</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tab 3: Workspace Sync Content -->
+  <div id="tab-workspace-sync" class="main-tab-content">
+    <!-- Security Warning & Consent Card -->
+    <section class="card" id="workspace-consent-card">
+      <div class="card-header warning">
+        <h3>Run in Workspace</h3>
+      </div>
+      <div class="card-body">
+        <p style="margin-bottom: 12px; font-size: 11px; line-height: 1.4;">
+          ⚠️ This feature runs test files and scripts directly in your project folder using your local Node.js environment (<code>npx playwright test</code>, <code>npx tsx</code>).
+        </p>
+        <p style="margin-bottom: 14px; font-size: 11px; line-height: 1.4; color: var(--text-muted);">
+          Enables importing your custom page objects, configs, and fixtures. Scripts execute as local shell processes.
+        </p>
+        <label class="checkbox-label" style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="workspace-sync-toggle" style="margin-top: 2px;">
+          <span style="font-size: 11px; font-weight: 600;">Enable Workspace Script Execution</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Workspace Runner Control Section (hidden/locked if toggle is unchecked) -->
+    <section class="card hidden" id="workspace-runner-card">
+      <div class="card-header">
+        <h3>Script Runner</h3>
+        <span class="badge" id="workspace-status-badge">Ready</span>
+      </div>
+
+      <div class="input-group">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <label for="workspace-textarea-script">Test Script</label>
+          <div style="display: flex; gap: 4px;">
+            <button id="workspace-script-open-editor-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Open in VS Code editor for full IntelliSense">Open in Editor ↗</button>
+            <button id="workspace-insert-base-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Insert base template for the selected runner">Insert Template</button>
+          </div>
+        </div>
+        <div id="workspace-script-editor-badge" class="editor-open-badge hidden">✏️ Editing in VS Code editor</div>
+        <textarea id="workspace-textarea-script" placeholder="import { test, expect } from '@playwright/test';&#10;&#10;test('Run spec', async ({ page }) => {&#10;  await page.goto('https://github.com/');&#10;  console.log('Running test in workspace spec!');&#10;});" rows="10" spellcheck="false"></textarea>
+        <span class="tip">💡 Imports of local helpers, page objects, configurations, and node modules are fully supported.</span>
+      </div>
+
+      <div class="workspace-settings-grid">
+        <div class="input-group">
+          <label for="workspace-select-mode">Runner Mode</label>
+          <select id="workspace-select-mode">
+            <option value="playwright-test" selected>Playwright Test Runner (runs via npx playwright test)</option>
+            <option value="workspace-standalone">Standalone TS Script (runs via npx tsx)</option>
+          </select>
+          <span class="tip" id="workspace-runner-description" style="margin-top: 4px; line-height: 1.3;">
+            Runs inside the Playwright Test framework. Supports test fixtures, configuration, and assertions. Automatically wraps your script in a <code>test()</code> block if you write bare statements.
+          </span>
+        </div>
+
+        <div class="input-group">
+          <label for="workspace-input-runner">Custom Command (Optional)</label>
+          <input type="text" id="workspace-input-runner" placeholder="e.g. npx playwright test, npx tsx">
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 4px;">
+          <label class="checkbox-label" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" id="workspace-attach-label">
+            <input type="checkbox" id="workspace-attach-cdp" checked>
+            <span style="font-size: 11px; font-weight: 500;">Connect to live browser tab</span>
+          </label>
+          
+          <div class="input-group-row" style="margin-top: 2px;">
+            <label for="workspace-input-timeout">Timeout (ms):</label>
+            <input type="number" id="workspace-input-timeout" value="30000" min="1000" step="5000" style="width: 80px; padding: 2px 4px;">
+          </div>
+        </div>
+      </div>
+
+      <button id="workspace-btn-run" class="btn btn-primary btn-full" style="margin-top: 12px;">▶ Run Script</button>
+
+      <div class="interaction-console-section" style="margin-top: 12px;">
+        <div class="console-toolbar">
+          <span style="font-size: 10px; font-weight: bold; color: var(--text-muted);">OUTPUT</span>
+          <div style="display: flex; gap: 4px;">
+            <button class="btn-icon-copy console-expand-btn" data-target="workspace-console-output" style="font-size: 9px; padding: 2px 6px;" title="Expand / Collapse">⤢</button>
+            <button id="workspace-btn-clear-console" class="btn-icon-copy" style="font-size: 9px; padding: 2px 6px;">Clear</button>
+          </div>
+        </div>
+        <div class="interaction-console" id="workspace-console-output">
+          <div class="console-placeholder">Script output will appear here...</div>
+        </div>
+      </div>
+    </section>
+  </div>
 
   </div>
+
   <script src="${scriptUri}"></script>
 </body>
 </html>

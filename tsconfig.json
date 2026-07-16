@@ -11,6 +11,7 @@
     "sourceMap": true,
     "moduleResolution": "node",
     "baseUrl": ".",
+    "ignoreDeprecations": "5.0",
     "paths": {
       "playwright-locator-toolkit-shared": ["packages/shared/src/index.ts"],
       "playwright-locator-toolkit-parser": ["packages/locator-parser/src/index.ts"],

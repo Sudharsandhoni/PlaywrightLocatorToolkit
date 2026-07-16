@@ -1,8 +1,8 @@
 {
   "name": "playwright-locator-toolkit",
-  "displayName": "Playwright Locator Toolkit",
-  "description": "Live Playwright Locator Validation & Analysis in VS Code",
-  "version": "0.1.1",
+  "displayName": "Playwright Live Playground",
+  "description": "Live Playwright Playground & Locator Analysis in VS Code",
+  "version": "0.2.0",
   "publisher": "sudharsan-ezhumalai",
   "icon": "icon.png",
   "engines": {
@@ -18,7 +18,7 @@
       "activitybar": [
         {
           "id": "playwright-locator-toolkit-container",
-          "title": "Playwright Locator Toolkit",
+          "title": "Playwright Live Playground (Debug Assistant)",
           "icon": "$(eye)"
         }
       ]
@@ -28,12 +28,12 @@
         {
           "type": "webview",
           "id": "playwright-locator-toolkit-sidebar",
-          "name": "Playwright Locator Toolkit"
+          "name": "Playwright Live Playground (Debug Assistant)"
         }
       ]
     },
     "configuration": {
-      "title": "Playwright Locator Toolkit",
+      "title": "Playwright Live Playground (Debug Assistant)",
       "properties": {
         "playwright-locator-toolkit.browserPath": {
           "type": "string",

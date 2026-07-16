@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LocatorEngine = void 0;
+exports.generateWorkspaceScriptContent = generateWorkspaceScriptContent;
+exports.prepareWorkspaceScript = prepareWorkspaceScript;
 const playwright_core_1 = require("playwright-core");
 const playwright_locator_toolkit_parser_1 = require("playwright-locator-toolkit-parser");
 const playwright_locator_toolkit_agent_1 = require("playwright-locator-toolkit-agent");
@@ -93,7 +95,7 @@ class LocatorEngine {
         if (this.browser) {
             await this.disconnect();
         }
-        this.browser = await playwright_core_1.chromium.connectOverCDP(cdpUrl, { timeout: 5000 });
+        this.browser = await playwright_core_1.chromium.connectOverCDP(cdpUrl, { timeout: 30000 });
         this.pages.clear();
         const contexts = this.browser.contexts();
         const allPages = [];
@@ -580,6 +582,28 @@ Incorrect: .or.locator('...')  ←  missing parentheses and argument\nCorrect:  
         }
         catch (err) {
             console.error('Failed to simulate click:', err);
+            return false;
+        }
+    }
+    async simulateHover(pageId, locatorStr) {
+        const page = this.getPage(pageId);
+        if (!page)
+            return false;
+        try {
+            await this.ensureAgentInjected(page);
+            const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
+            if (parsedSteps.length === 0)
+                return false;
+            const locatorInstance = constructLocator(page, parsedSteps);
+            const handle = await locatorInstance.elementHandle();
+            if (!handle)
+                return false;
+            return await page.evaluate((el) => {
+                return window.__locatorLensAgent.simulateHover(el);
+            }, handle);
+        }
+        catch (err) {
+            console.error('Failed to simulate hover:', err);
             return false;
         }
     }
@@ -1506,6 +1530,391 @@ export class UIAutomationSDK {
             suggestedAlternatives: suggestions
         };
     }
+    async performAction(pageId, locatorStr, action, args, timeoutMs = 5000) {
+        const page = this.getPage(pageId);
+        if (!page) {
+            return { success: false, error: 'Page not found.' };
+        }
+        try {
+            const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
+            if (parsedSteps.length === 0) {
+                return { success: false, error: 'Empty locator expression.' };
+            }
+            const locatorInstance = constructLocator(page, parsedSteps);
+            if (!locatorInstance) {
+                return { success: false, error: 'Failed to construct locator.' };
+            }
+            const options = { timeout: timeoutMs };
+            switch (action) {
+                case 'click':
+                    await locatorInstance.click(options);
+                    break;
+                case 'hover':
+                    await locatorInstance.hover(options);
+                    break;
+                case 'fill':
+                    if (args.length === 0 || typeof args[0] !== 'string') {
+                        return { success: false, error: 'Fill action requires a string value.' };
+                    }
+                    await locatorInstance.fill(args[0], options);
+                    break;
+                case 'clear':
+                    await locatorInstance.clear(options);
+                    break;
+                case 'check':
+                    await locatorInstance.check(options);
+                    break;
+                case 'uncheck':
+                    await locatorInstance.uncheck(options);
+                    break;
+                case 'selectOption':
+                    await locatorInstance.selectOption(args[0], options);
+                    break;
+                case 'press':
+                    if (args.length === 0 || typeof args[0] !== 'string') {
+                        return { success: false, error: 'Press action requires a key string.' };
+                    }
+                    await locatorInstance.press(args[0], options);
+                    break;
+                case 'focus':
+                    await locatorInstance.focus(options);
+                    break;
+                case 'scrollIntoView':
+                    await locatorInstance.scrollIntoViewIfNeeded(options);
+                    break;
+                default:
+                    return { success: false, error: `Unsupported action: ${action}` };
+            }
+            return { success: true };
+        }
+        catch (err) {
+            return { success: false, error: err.message || String(err) };
+        }
+    }
+    async executeExtensionSandbox(pageId, locatorStr, userCode, timeoutMs = 5000) {
+        const page = this.getPage(pageId);
+        if (!page) {
+            return { success: false, log: [], error: 'Page not found.' };
+        }
+        const logs = [];
+        const customConsole = {
+            log: (...args) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
+            error: (...args) => logs.push('[ERROR] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
+            warn: (...args) => logs.push('[WARN] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '))
+        };
+        try {
+            let locatorInstance = undefined;
+            if (locatorStr && locatorStr.trim()) {
+                const parsedSteps = (0, playwright_locator_toolkit_parser_1.parseLocator)(locatorStr);
+                if (parsedSteps.length > 0) {
+                    locatorInstance = constructLocator(page, parsedSteps);
+                }
+            }
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const fn = new Function('locator', 'e', 'page', 'console', 'sleep', `return (async () => {
+          ${userCode}
+        })()`);
+            await Promise.race([
+                fn(locatorInstance, locatorInstance, page, customConsole, sleep),
+                new Promise((_, reject) => setTimeout(() => reject(new Error(`Custom code execution timed out after ${timeoutMs}ms.`)), timeoutMs))
+            ]);
+            return { success: true, log: logs };
+        }
+        catch (err) {
+            return { success: false, log: logs, error: err.message || String(err) };
+        }
+    }
+    prepareWorkspaceScript(workspaceRoot, userCode, cdpUrl, targetUrl, isPlaywrightTest, attachCdp, activeFilePath) {
+        const fs = require('fs');
+        const path = require('path');
+        let isTypeScript = true;
+        if (activeFilePath) {
+            if (activeFilePath.endsWith('.js') || activeFilePath.endsWith('.jsx') || activeFilePath.endsWith('.mjs')) {
+                isTypeScript = false;
+            }
+            else if (activeFilePath.endsWith('.ts') || activeFilePath.endsWith('.tsx') || activeFilePath.endsWith('.mts')) {
+                isTypeScript = true;
+            }
+        }
+        else {
+            const hasTsConfig = fs.existsSync(path.join(workspaceRoot, 'tsconfig.json'));
+            const hasPlaywrightTs = fs.existsSync(path.join(workspaceRoot, 'playwright.config.ts'));
+            isTypeScript = hasTsConfig || hasPlaywrightTs;
+        }
+        const ext = isTypeScript ? 'ts' : 'js';
+        const fileContent = generateWorkspaceScriptContent(userCode, isPlaywrightTest ? 'playwright-test' : 'standalone', attachCdp, cdpUrl, targetUrl, isTypeScript);
+        const fileName = isPlaywrightTest ? `locator-lens-sandbox.spec.${ext}` : `locator-lens-sandbox.${ext}`;
+        let targetDir = workspaceRoot;
+        if (isPlaywrightTest) {
+            const findFirstSpecDir = (dir) => {
+                try {
+                    const files = fs.readdirSync(dir);
+                    const dirsToSearch = [];
+                    for (const file of files) {
+                        if (file === 'node_modules' || file === '.git' || file === '.vscode' || file === 'dist' || file === 'build') {
+                            continue;
+                        }
+                        const fullPath = path.join(dir, file);
+                        try {
+                            const stat = fs.statSync(fullPath);
+                            if (stat.isDirectory()) {
+                                dirsToSearch.push(fullPath);
+                            }
+                            else if ((file.endsWith('.spec.ts') || file.endsWith('.spec.js') ||
+                                file.endsWith('.test.ts') || file.endsWith('.test.js')) &&
+                                !file.includes('locator-lens-sandbox')) {
+                                return dir;
+                            }
+                        }
+                        catch { }
+                    }
+                    for (const subDir of dirsToSearch) {
+                        const found = findFirstSpecDir(subDir);
+                        if (found)
+                            return found;
+                    }
+                }
+                catch { }
+                return null;
+            };
+            let resolvedSpecDir = null;
+            if (activeFilePath && activeFilePath.startsWith(workspaceRoot) &&
+                (activeFilePath.endsWith('.spec.ts') || activeFilePath.endsWith('.spec.js') ||
+                    activeFilePath.endsWith('.test.ts') || activeFilePath.endsWith('.test.js'))) {
+                resolvedSpecDir = path.dirname(activeFilePath);
+            }
+            if (!resolvedSpecDir) {
+                resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+            }
+            if (resolvedSpecDir) {
+                targetDir = resolvedSpecDir;
+            }
+            else {
+                let configTestDir = undefined;
+                const configFiles = ['playwright.config.ts', 'playwright.config.js'];
+                for (const configFile of configFiles) {
+                    const configPath = path.join(workspaceRoot, configFile);
+                    if (fs.existsSync(configPath)) {
+                        try {
+                            const content = fs.readFileSync(configPath, 'utf8');
+                            const match = content.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+                            if (match && match[1]) {
+                                configTestDir = match[1].trim();
+                                break;
+                            }
+                        }
+                        catch (e) {
+                            console.error('Failed to read playwright config:', e);
+                        }
+                    }
+                }
+                if (configTestDir) {
+                    const resolvedTestDir = path.resolve(workspaceRoot, configTestDir);
+                    if (fs.existsSync(resolvedTestDir) && fs.statSync(resolvedTestDir).isDirectory()) {
+                        targetDir = resolvedTestDir;
+                    }
+                }
+                else {
+                    const commonDirs = ['tests', 'e2e', 'specs', 'test'];
+                    for (const dirName of commonDirs) {
+                        const fullDir = path.join(workspaceRoot, dirName);
+                        if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+                            targetDir = fullDir;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        const filePath = path.join(targetDir, fileName);
+        fs.writeFileSync(filePath, fileContent, 'utf8');
+        return {
+            filePath,
+            cleanup: () => {
+                try {
+                    if (fs.existsSync(filePath)) {
+                        fs.unlinkSync(filePath);
+                    }
+                }
+                catch { }
+            }
+        };
+    }
 }
 exports.LocatorEngine = LocatorEngine;
+function generateWorkspaceScriptContent(userCode, mode, attachCdp, cdpUrl, targetUrl, isTypeScript = true) {
+    // Split imports and body
+    const lines = userCode.split('\n');
+    const importLines = [];
+    const bodyLines = [];
+    let inMultiLineImport = false;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('import ') || trimmed.startsWith('import{')) {
+            importLines.push(line);
+            if (trimmed.includes('{') && !trimmed.includes('}')) {
+                inMultiLineImport = true;
+            }
+        }
+        else if (inMultiLineImport) {
+            importLines.push(line);
+            if (trimmed.includes('}')) {
+                inMultiLineImport = false;
+            }
+        }
+        else {
+            bodyLines.push(line);
+        }
+    }
+    const userImports = importLines.join('\n');
+    const userBody = bodyLines.join('\n');
+    let fileContent = '';
+    const isPlaywrightTest = mode === 'playwright-test';
+    if (isPlaywrightTest) {
+        // Parse imports to check if they import custom test object
+        let extendTarget = 'base';
+        let modifiedImports = userImports;
+        const testImportRegex = /import\s+\{\s*([^}]*?\btest\b[^}]*?)\s*\}\s+from\s+['"]([^'"]+)['"]/g;
+        if (testImportRegex.test(userImports)) {
+            modifiedImports = userImports.replace(testImportRegex, (match, importsStr, path) => {
+                const newImports = importsStr.replace(/\btest\b/g, 'test as importedTest');
+                extendTarget = 'importedTest';
+                return `import { ${newImports} } from '${path}'`;
+            });
+        }
+        const hasTestDeclaration = /\btest\s*\(\s*['"`]/.test(userBody) || /\btest\.(only|skip|describe)\b/.test(userBody);
+        let testBodyContent = '';
+        if (hasTestDeclaration) {
+            testBodyContent = userBody;
+        }
+        else {
+            testBodyContent = `test('Interactive Sandbox Test', async ({ page }) => {
+  ${userBody}
+});`;
+        }
+        if (attachCdp) {
+            fileContent = `// Playwright Live Playground Generated Spec
+import { test as base, expect } from '@playwright/test';
+${modifiedImports}
+
+const sleep = ${isTypeScript ? '(ms: number)' : '(ms)'} => new Promise(resolve => setTimeout(resolve, ms));
+
+const test = ${extendTarget}.extend({
+  page: async ({}, use) => {
+    let playChromium;
+    try { playChromium = require('@playwright/test').chromium; } catch {
+      try { playChromium = require('playwright').chromium; } catch {
+        try { playChromium = require('playwright-core').chromium; } catch {
+          throw new Error("Could not find Playwright package ('@playwright/test', 'playwright', or 'playwright-core') in your project dependencies.");
+        }
+      }
+    }
+    const browser = await playChromium.connectOverCDP('${cdpUrl || ''}');
+    try {
+      const contexts = browser.contexts();
+      let ${isTypeScript ? 'page: any' : 'page'};
+      const targetUrl = '${targetUrl || ''}';
+      for (const context of contexts) {
+        const pages = context.pages();
+        page = pages.find((p: any) => p.url() === targetUrl);
+        if (page) break;
+      }
+      if (!page) {
+        page = contexts[0]?.pages()[0];
+      }
+      if (!page) {
+        throw new Error("No active page found in browser session.");
+      }
+      await use(page);
+    } finally {
+      await browser.close();
+    }
+  }
+});
+
+${testBodyContent}
+`;
+        }
+        else {
+            const hasTestImport = /\bimport\s+[^;]*?\btest\b/.test(userImports);
+            const importPrepend = hasTestImport ? '' : `import { test, expect } from '@playwright/test';\n`;
+            fileContent = `// Playwright Live Playground Generated Spec (Standard Runner)
+${importPrepend}${userImports}
+
+const sleep = ${isTypeScript ? '(ms: number)' : '(ms)'} => new Promise(resolve => setTimeout(resolve, ms));
+
+${testBodyContent}
+`;
+        }
+    }
+    else {
+        if (attachCdp) {
+            fileContent = `// Playwright Live Playground Generated Standalone Script
+${userImports}
+
+async function main() {
+  let playChromium;
+  try { playChromium = require('@playwright/test').chromium; } catch {
+    try { playChromium = require('playwright').chromium; } catch {
+      try { playChromium = require('playwright-core').chromium; } catch {
+        throw new Error("Could not find Playwright package ('@playwright/test', 'playwright', or 'playwright-core') in your project dependencies.");
+      }
+    }
+  }
+  const browser = await playChromium.connectOverCDP('${cdpUrl || ''}');
+  try {
+    const contexts = browser.contexts();
+    let ${isTypeScript ? 'page: any' : 'page'};
+    const targetUrl = '${targetUrl || ''}';
+    for (const context of contexts) {
+      const pages = context.pages();
+      page = pages.find((p: any) => p.url() === targetUrl);
+      if (page) break;
+    }
+    if (!page) {
+      page = contexts[0]?.pages()[0];
+    }
+    if (!page) {
+      throw new Error("No active page found in browser session.");
+    }
+    
+    const sleep = ${isTypeScript ? '(ms: number)' : '(ms)'} => new Promise(resolve => setTimeout(resolve, ms));
+    
+    // User script body
+    ${userBody}
+    
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`;
+        }
+        else {
+            fileContent = `// Playwright Live Playground Generated Standalone Script (Standard Node)
+${userImports}
+
+const sleep = ${isTypeScript ? '(ms: number)' : '(ms)'} => new Promise(resolve => setTimeout(resolve, ms));
+
+async function main() {
+  // User script body
+  ${userBody}
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`;
+        }
+    }
+    return fileContent;
+}
+function prepareWorkspaceScript(userCode, mode, attachCdp, cdpUrl, targetUrl, isTypeScript = true) {
+    return generateWorkspaceScriptContent(userCode, mode, attachCdp, cdpUrl, targetUrl, isTypeScript);
+}
 //# sourceMappingURL=index.js.map

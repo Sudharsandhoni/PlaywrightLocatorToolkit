@@ -24,6 +24,7 @@ export declare class LocatorEngine {
     stabilityTest(pageId: string, locatorStr: string, runs?: number): Promise<StabilityResult>;
     simulateFill(pageId: string, locatorStr: string, value: string): Promise<boolean>;
     simulateClick(pageId: string, locatorStr: string, x?: number, y?: number): Promise<boolean>;
+    simulateHover(pageId: string, locatorStr: string): Promise<boolean>;
     bulkStabilityTest(pageId: string, locatorStrs: string[], runs?: number): Promise<{
         [locatorStr: string]: StabilityResult;
     }>;
@@ -37,4 +38,19 @@ export declare class LocatorEngine {
     private calculateConfidence;
     private hasFragileNameFilter;
     private performFailureAnalysis;
+    performAction(pageId: string, locatorStr: string, action: string, args: any[], timeoutMs?: number): Promise<{
+        success: boolean;
+        error?: string;
+    }>;
+    executeExtensionSandbox(pageId: string, locatorStr: string, userCode: string, timeoutMs?: number): Promise<{
+        success: boolean;
+        log: string[];
+        error?: string;
+    }>;
+    prepareWorkspaceScript(workspaceRoot: string, userCode: string, cdpUrl: string, targetUrl: string, isPlaywrightTest: boolean, attachCdp: boolean, activeFilePath?: string): {
+        filePath: string;
+        cleanup: () => void;
+    };
 }
+export declare function generateWorkspaceScriptContent(userCode: string, mode: 'playwright-test' | 'standalone', attachCdp: boolean, cdpUrl?: string, targetUrl?: string, isTypeScript?: boolean): string;
+export declare function prepareWorkspaceScript(userCode: string, mode: 'playwright-test' | 'standalone', attachCdp: boolean, cdpUrl?: string, targetUrl?: string, isTypeScript?: boolean): string;

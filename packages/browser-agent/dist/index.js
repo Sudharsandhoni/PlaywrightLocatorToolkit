@@ -699,6 +699,22 @@ exports.AGENT_SCRIPT = `
       }
     },
 
+    simulateHover(el) {
+      if (!el) return false;
+      try {
+        const rect = el.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        
+        el.dispatchEvent(new MouseEvent('mouseenter', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseover', { clientX, clientY, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mousemove', { clientX, clientY, bubbles: true, cancelable: true }));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
     // Phase 8 — Form-Aware Analysis
     scanForms() {
       const FIELD_TAGS = ['input', 'select', 'textarea'];

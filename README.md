@@ -1,34 +1,67 @@
-# Playwright Locator Toolkit 🔍
+# Playwright Live Playground 🔍
 
 > 🎯 **Stop guessing your Playwright locators.**
-> ⚡ **Debug Playwright locators instantly.**
-> 👀 **See what your locator actually matches.**
+> ⚡ **Interact, script, and validate locators instantly.**
+> 👀 **See what your locator matches on the live browser.**
 
-**Playwright Locator Toolkit** is a real-time locator validation, analysis, and UI scanning tool integrated directly into VS Code as a sidebar extension. It helps automation engineers instantly write, debug, and optimize complex Playwright locators against live web pages.
+**Playwright Live Playground** is a real-time locator validation, interaction, and scripting tool integrated directly into VS Code as a sidebar extension. It helps automation engineers instantly write, debug, optimize, and test complex Playwright scripts against live web pages.
 
 ---
 
 ## 🚀 Key Features
 
-* **Instant Locator Playground**: Type any Playwright locator and see matches highlighted immediately on the live browser tab.
-* **Complex Chaining Evaluation**: Fully supports chaining filters, indexes, `.or()`, `.and()`, and `.filter()` operators.
-* **Auto-Launched Debugging Browser**: Spin up Google Chrome in remote-debugging mode (`--remote-debugging-port`) directly from the extension sidebar—no command prompt required.
-* **Smarter Match Navigation**: Traverse multiple matching elements seamlessly (e.g. `match 5 of 22`) while viewing metadata details focused specifically on the selected match.
-* **Diagnostics & Alternatives**:
-  - Shows alternative recommended selectors sorted by **confidence score**.
-  - Diagnoses failing locators step-by-step to point out where the chain broke (e.g. invalid text, missing label, wrong role).
-* **UI Scanner & Accessibility Audit (Beta)**:
-  - Generate full Semantic UI Trees.
-  - Run accessibility checks on elements (missing labels, dynamic IDs, duplicate descriptors).
-  - Export structures to Page Object Models (POM) or SDK wrappers.
+### 🔎 Tab 1 — Locator
+
+Type any Playwright locator expression and see matching elements highlighted on the live browser in real time.
+
+* **Real-time Highlights**: Instant visual feedback — matching elements are outlined and labelled on the page.
+* **Match Navigation**: Step through multiple matches (e.g., `3 of 22`) while viewing element metadata for the focused match.
+* **Interact Button**: Opens the **Element Interaction** card with two sub-tabs:
+  - **Quick Actions** — One-click `Click`, `Hover`, `Focus`, `Check`/`Uncheck`, `Clear`, `Scroll To`, plus input fields for `Fill`, `Select Option`, and `Press Key`.
+  - **Element Scripting** — Write multi-line async scripts using the `e` variable (the matched locator) and run them with `▶ Run Script`.
+* **Failure Diagnosis**: When a locator matches nothing, the tool walks the chain step-by-step to show you exactly where it broke.
+* **Diagnostics & Alternatives**: Shows alternative recommended selectors sorted by confidence score.
+
+---
+
+### 🌐 Tab 2 — Browser Scripts
+
+Run free-form Playwright scripts against the connected page — no test framework needed.
+
+* **Script Editor**: Write async code using the global `page` variable (Playwright Page instance).
+* **Timeout Control**: Adjust the execution timeout per run.
+* **Expandable Output Panel**: View `console.log` output and script results in a resizable output panel (click ⤢ to expand).
+* **Secure Sandbox**: Scripts execute inside a sandboxed context within the VS Code extension host — no `eval`, no `vm` escape vectors.
+
+---
+
+### 🖥️ Tab 3 — Run in Workspace
+
+Execute test files and standalone scripts directly in your project workspace using your local Node.js environment.
+
+* **Runner Modes**:
+  - **Playwright Test Runner** — Runs via `npx playwright test` with full support for fixtures, config, and `expect` assertions.
+  - **Standalone TS Script** — Runs via `npx tsx` for quick scripts without the test framework.
+* **Connect to Live Browser Tab**: Toggle this checkbox to have the tool wrap your script with a CDP connection, injecting a pre-connected `page` object. Uncheck it to run scripts that launch their own browser.
+* **Smart Import Resolution**: The tool detects the directory depth of your active file (or scans your workspace), placing the temporary spec alongside your existing tests so that relative imports (e.g., `../fixtures/core/appRegistry.fixture.js`) resolve correctly.
+* **Custom Command**: Optionally override the default runner command.
+* **Expandable Output Panel**: Full stdout/stderr streaming with expand/collapse support.
+
+---
+
+### 📐 UI Scanner & Code Export (Beta)
+
+* Generate full Semantic UI Trees of the current page.
+* Run accessibility audits (missing labels, dynamic IDs, duplicate descriptors).
+* Export element structures to Page Object Model (POM) classes.
 
 ---
 
 ## 🔗 Supported Locators & Chaining
 
-Playwright Locator Toolkit supports evaluating the full spectrum of Playwright selectors, including:
+Playwright Live Playground supports evaluating the full spectrum of Playwright selectors:
 
-### 1. Core Locators
+### Core Locators
 * `page.locator(selector)` (CSS or XPath)
 * `page.getByRole(role, options)`
 * `page.getByLabel(text, options)`
@@ -38,94 +71,96 @@ Playwright Locator Toolkit supports evaluating the full spectrum of Playwright s
 * `page.getByTitle(text, options)`
 * `page.getByTestId(id)`
 
-### 2. Complex Chaining & Filtering
-You can connect and chain operators to narrow down targets:
-* **Chaining Locators**: `page.locator('form').locator('input')`
-* **Filtering by Text**: `page.locator('tr').filter({ hasText: 'John Doe' })`
-* **Filtering by Nested Element**: `page.locator('div').filter({ has: page.locator('span.badge') })`
-* **Logical OR Combinations**: `page.locator('button.submit').or(page.locator('input[type="submit"]'))`
-* **Logical AND Combinations**: `page.locator('input').and(page.locator('[required]'))`
-* **Index Traversals**: `.first()`, `.last()`, `.nth(index)`
+### Complex Chaining & Filtering
+* **Chaining**: `page.locator('form').locator('input')`
+* **Filter by Text**: `page.locator('tr').filter({ hasText: 'John Doe' })`
+* **Filter by Element**: `page.locator('div').filter({ has: page.locator('span.badge') })`
+* **Logical OR**: `page.locator('button.submit').or(page.locator('input[type="submit"]'))`
+* **Logical AND**: `page.locator('input').and(page.locator('[required]'))`
+* **Index**: `.first()`, `.last()`, `.nth(index)`
 
 ---
 
 ## 🏗️ Architecture Overview
 
-The project is structured as a multi-package Monorepo utilizing NPM Workspaces:
+The project is structured as a multi-package monorepo with NPM Workspaces:
 
 ```
-PlaywrightLocatorToolkit/
+PlaywrightLivePlayground/
 ├── packages/
-│   ├── extension/          # VS Code extension runner & sidebar Webview UI
-│   ├── engine/             # Sandbox execution engine & diagnostic analyzer
-│   ├── locator-parser/     # Custom tokenizer and AST parser for locator strings
-│   ├── browser-agent/      # Client-side agent script injected into the web page
-│   └── shared/             # Common TypeScript typings and interfaces
+│   ├── extension/          # VS Code extension host & Webview sidebar UI
+│   ├── engine/             # Execution engine, code wrappers & diagnostics
+│   ├── locator-parser/     # Tokenizer and AST parser for locator expressions
+│   ├── browser-agent/      # Client-side agent injected into Chrome via CDP
+│   └── shared/             # Common TypeScript interfaces & schemas
 └── README.md
 ```
+
+### Data Flow
 
 ```mermaid
 flowchart TD
     subgraph VS Code Extension Host
         A[SidebarProvider] -->|Spawns Chrome| B[Local Chrome Process]
-        A -->|cdp connection| C[LocatorEngine]
+        A -->|CDP Connection| C[LocatorEngine]
+        A -->|Spawns Runner| G["Local child_process"]
     end
 
     subgraph Chrome Debugger CDP
-        B -->|Remote Debugger Port| D[Target Web Page]
+        B -->|Remote Debug Port| D[Target Web Page]
         C -->|Injects| E[Browser Agent Script]
     end
 
     subgraph Safe Programmatic Evaluation
-        C -->|Programmatic Locator Interpreter| F[Evaluate Locator String]
+        C -->|Programmatic Interpreter| F[Evaluate Locator String]
         F -->|Count / Highlight| D
         E -->|Scan Accessibility & DOM| C
     end
 
-    subgraph Parsing & Analysis
-        F -->|If count is 0| G[Locator Parser]
-        G -->|Step AST| H[Failure Diagnostic Analyser]
+    subgraph Local Runner Execution
+        G -->|npx playwright test / npx tsx| H["Temp Spec File"]
+        H -->|Auto-wraps CDP Connection| D
     end
 ```
 
-### 1. Extension (`packages/extension`)
-Acts as the bridge between VS Code and the browser.
-* Spawns Chrome with flags: `--remote-debugging-port=9222`, `--user-data-dir=.vscode/playwright-locator-profile/`.
-* Manages the Sidebar Webview panel (`index.html` + `main.js`), rendering query boxes, match highlights, details, copy controls, and beta toggles.
+### Package Responsibilities
 
-### 2. Engine (`packages/engine`)
-Handles execution safety and diagnostics.
-* Safely parses and programmatically evaluates locator expressions step-by-step using a secure method whitelist (e.g. `getByRole`, `locator`, `filter`), completely eliminating `eval` or Node `vm.runInContext` sandbox escape exploits.
-* Conducts **Failure Diagnostics** by splitting query paths into steps, evaluating them incrementally, and identifying the precise node where a query yields zero elements.
-
-### 3. Parser (`packages/locator-parser`)
-A custom lexical tokenizer and recursive descent parser.
-* Tokenizes the locator string into identifier/string/regex tokens.
-* Builds a step-by-step AST array representing the chain (e.g. `[{ name: 'locator', args: ['div'] }, { name: 'or', args: [...] }]`).
-* Provides stringification utilities to reconstruct sub-locators for diagnostics.
-
-### 4. Browser Agent (`packages/browser-agent`)
-A client-side script injected into the target browser frame.
-* Operates inside the browser to query CSS bounding rects, generate overlays for highlights, and analyze semantic tags.
-* Conducts Accessibility Audits, computing Automation Readiness scores.
-
-### 5. Shared (`packages/shared`)
-Declares TypeScript interfaces (e.g. `EvaluationResult`, `ElementDetails`, `UiNode`) shared across the frontend webview, extension host, engine, and agent.
+| Package | Role |
+|---------|------|
+| **extension** | Manages the Webview sidebar, spawns Chrome with `--remote-debugging-port=9222`, handles user actions and renders results. |
+| **engine** | Parses & evaluates locator expressions safely (secure method whitelist, no eval), runs failure diagnostics, generates CDP-connected script wrappers. |
+| **locator-parser** | Custom recursive-descent parser: tokenizes locator strings into AST steps for incremental evaluation and diagnostics. |
+| **browser-agent** | Injected into the browser page via CDP. Queries bounding rects, generates highlight overlays, and runs accessibility audits. |
+| **shared** | TypeScript interfaces (`EvaluationResult`, `ElementDetails`, `UiNode`) shared across all packages. |
 
 ---
 
-## 🛠️ Configuration Settings
+## 🛠️ Configuration
 
-Configure settings inside VS Code (`settings.json`):
-* `playwright-locator-toolkit.browserPath`: Specific path to Google Chrome (defaults to auto-detect).
-* `playwright-locator-toolkit.debuggingPort`: CDP port (default: `9222`).
-* `playwright-locator-toolkit.enableBetaFeatures`: Toggle (default: `false`) to display advanced actions like Stability Testing, Action Simulation, and POM Code Export.
-* `playwright-locator-toolkit.cleanBrowserProfile`: Toggle (default: `false`) to clean up the temporary Chrome profile folder upon exit.
+Configure in VS Code (`settings.json`):
 
-## 🎬 Demonstration Video
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `playwright-locator-toolkit.browserPath` | Auto-detect | Path to Chrome/Chromium executable |
+| `playwright-locator-toolkit.debuggingPort` | `9222` | Chrome DevTools Protocol port |
+| `playwright-locator-toolkit.enableBetaFeatures` | `false` | Show UI Scanner & POM Export features |
+| `playwright-locator-toolkit.cleanBrowserProfile` | `false` | Delete temp Chrome profile on exit |
 
-Below is a recording showing Playwright locators highlighting matching elements:
+---
 
-![Playwright Locator Toolkit Demo](./PlaywrightLocatorToolkit_Demo.gif)
+## 🌐 Supported Languages & Frameworks
+
+* **First-Class Support**: Fully supports **JavaScript** and **TypeScript** out of the box. The tool automatically detects whether the active file or project uses JS or TS, and generates sandbox/playground files with the matching extension (`.js` or `.ts`), stripping type assertions if JavaScript is used.
+* **Other Languages (Python, Java, C#)**: Playwright Live Playground's interactive validation and visual highlighting work against **any** live page regardless of what language you use to write your test suite. However, the *Workspace Runner* and *Playground Editor* execution currently support Node.js-based test runners (JavaScript and TypeScript). For Python, Java, and other languages, we plan to roll out full execution runner support in a future release.
+
+---
+
+## 🎬 Demo
+
+> _Demo video coming soon._
+
+<!-- Uncomment when demo assets are available:
+![Playwright Live Playground Demo](./PlaywrightLocatorToolkit_Demo.gif)
 
 [▶ Watch Video](./PlaywrightLocatorToolkit_Demo.mp4)
+-->
