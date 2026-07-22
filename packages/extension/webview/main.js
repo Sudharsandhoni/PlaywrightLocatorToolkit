@@ -877,22 +877,26 @@
           writePageConsole(`[SUCCESS] Sandbox execution completed.\n`, 'success');
           if (activeScriptTarget === 'element') {
             setInteractionStatus('Success', 'success');
+            setButtonRunning(document.getElementById('int-btn-run-script'), false, '', '▶ Run Script');
             if (interactionErrorDisplay) {
               interactionErrorDisplay.classList.add('hidden');
             }
           } else {
             setPageScriptStatus('Success', 'success');
+            setButtonRunning(pageBtnRun, false, '', '▶ Run Script');
           }
         } else {
           writePageConsole(`[ERROR] Sandbox execution failed: ${message.error}\n`, 'error');
           if (activeScriptTarget === 'element') {
             setInteractionStatus('Error', 'error');
+            setButtonRunning(document.getElementById('int-btn-run-script'), false, '', '▶ Run Script');
             if (interactionErrorDisplay && interactionErrorMessage) {
               interactionErrorDisplay.classList.remove('hidden');
               interactionErrorMessage.textContent = message.error || 'Element Sandbox Script execution failed.';
             }
           } else {
             setPageScriptStatus('Failed', 'error');
+            setButtonRunning(pageBtnRun, false, '', '▶ Run Script');
           }
         }
         break;
@@ -909,17 +913,25 @@
           writeWorkspaceConsole(`\n[ERROR] Script execution failed${message.error ? ': ' + message.error : ''} (exit code ${message.code || 1}).\n`, 'error');
           setWorkspaceStatus('Failed', 'error');
         }
+        setButtonRunning(workspaceBtnRun, false, '', '▶ Run Script');
         break;
       }
       case 'editor-opened': {
         const editorId = message.editorId;
+        const fileName = message.fileName || 'Playground Script';
         if (editorId === 'element-script') {
+          const badgeText = document.getElementById('element-script-badge-text');
+          if (badgeText) badgeText.textContent = `✏️ Syncing with: ${fileName}`;
           if (elementScriptEditorBadge) elementScriptEditorBadge.classList.remove('hidden');
           if (intTextareaScript) intTextareaScript.readOnly = true;
         } else if (editorId === 'browser-script') {
+          const badgeText = document.getElementById('browser-script-badge-text');
+          if (badgeText) badgeText.textContent = `✏️ Syncing with: ${fileName}`;
           if (browserScriptEditorBadge) browserScriptEditorBadge.classList.remove('hidden');
           if (pageTextareaScript) pageTextareaScript.readOnly = true;
         } else if (editorId === 'workspace-script') {
+          const badgeText = document.getElementById('workspace-script-badge-text');
+          if (badgeText) badgeText.textContent = `✏️ Syncing with: ${fileName}`;
           if (workspaceScriptEditorBadge) workspaceScriptEditorBadge.classList.remove('hidden');
           if (workspaceTextareaScript) workspaceTextareaScript.readOnly = true;
         }
@@ -941,13 +953,71 @@
       }
       case 'editor-content-synced': {
         const editorId = message.editorId;
+        const fileName = message.fileName;
         if (editorId === 'element-script') {
           if (intTextareaScript) intTextareaScript.value = message.content;
+          const badgeText = document.getElementById('element-script-badge-text');
+          if (badgeText && fileName) badgeText.textContent = `✏️ Syncing with: ${fileName}`;
+          if (elementScriptEditorBadge) elementScriptEditorBadge.classList.remove('hidden');
+          if (intTextareaScript) intTextareaScript.readOnly = true;
         } else if (editorId === 'browser-script') {
           if (pageTextareaScript) pageTextareaScript.value = message.content;
+          const badgeText = document.getElementById('browser-script-badge-text');
+          if (badgeText && fileName) badgeText.textContent = `✏️ Syncing with: ${fileName}`;
+          if (browserScriptEditorBadge) browserScriptEditorBadge.classList.remove('hidden');
+          if (pageTextareaScript) pageTextareaScript.readOnly = true;
         } else if (editorId === 'workspace-script') {
           if (workspaceTextareaScript) workspaceTextareaScript.value = message.content;
+          const badgeText = document.getElementById('workspace-script-badge-text');
+          if (badgeText && fileName) badgeText.textContent = `✏️ Syncing with: ${fileName}`;
+          if (workspaceScriptEditorBadge) workspaceScriptEditorBadge.classList.remove('hidden');
+          if (workspaceTextareaScript) workspaceTextareaScript.readOnly = true;
         }
+        break;
+      }
+      case 'extension-restarted': {
+        isConnected = false;
+        activePageId = '';
+        
+        if (connectionIndicator) {
+          connectionIndicator.textContent = 'Disconnected';
+          connectionIndicator.className = 'status-indicator disconnected';
+        }
+        if (connectionInputsGroup) connectionInputsGroup.classList.remove('hidden');
+        if (connectedInfo) connectedInfo.classList.add('hidden');
+        
+        if (typeof updateEvaluateButtonState === 'function') updateEvaluateButtonState();
+        if (typeof updateConnectionOverlays === 'function') updateConnectionOverlays();
+        if (resultsPanel) resultsPanel.classList.add('hidden');
+
+        if (typeof updateStabilityCardVisibility === 'function') updateStabilityCardVisibility();
+        if (typeof updateUiScannerVisibility === 'function') updateUiScannerVisibility();
+
+        if (intTextareaScript) {
+          intTextareaScript.value = '';
+          intTextareaScript.readOnly = false;
+        }
+        if (pageTextareaScript) {
+          pageTextareaScript.value = '';
+          pageTextareaScript.readOnly = false;
+        }
+        if (workspaceTextareaScript) {
+          workspaceTextareaScript.value = '';
+          workspaceTextareaScript.readOnly = false;
+        }
+        if (elementScriptEditorBadge) elementScriptEditorBadge.classList.add('hidden');
+        if (browserScriptEditorBadge) browserScriptEditorBadge.classList.add('hidden');
+        if (workspaceScriptEditorBadge) workspaceScriptEditorBadge.classList.add('hidden');
+
+        if (typeof clearPageConsole === 'function') clearPageConsole();
+        if (typeof clearWorkspaceConsole === 'function') clearWorkspaceConsole();
+        if (typeof writePageConsole === 'function') writePageConsole(`[INFO] Extension restarted. Clean state initialized.\n`, 'info');
+        if (typeof writeWorkspaceConsole === 'function') writeWorkspaceConsole(`[INFO] Extension restarted. Clean state initialized.\n`, 'info');
+
+        // Reset any stuck running buttons
+        setButtonRunning(pageBtnRun, false, '', '▶ Run Script');
+        setButtonRunning(workspaceBtnRun, false, '', '▶ Run Script');
+        setButtonRunning(document.getElementById('int-btn-run-script'), false, '', '▶ Run Script');
         break;
       }
     }
@@ -3325,6 +3395,30 @@
     }
   }
 
+  /**
+   * Puts a button into a "running" visual state (shimmer + blocked clicks)
+   * or restores it to its idle label.
+   * @param {HTMLElement|null} btn
+   * @param {boolean} running
+   * @param {string} [runningLabel]  label shown while running (default '⏳ Running…')
+   * @param {string} [idleLabel]    label restored when done (default original textContent)
+   */
+  function setButtonRunning(btn, running, runningLabel = '⏳ Running…', idleLabel = null) {
+    if (!btn) return;
+    if (running) {
+      if (!btn.dataset.idleLabel) {
+        btn.dataset.idleLabel = btn.textContent;
+      }
+      btn.textContent = runningLabel;
+      btn.classList.add('btn--running');
+      btn.disabled = true;
+    } else {
+      btn.textContent = idleLabel || btn.dataset.idleLabel || btn.textContent;
+      btn.classList.remove('btn--running');
+      btn.disabled = false;
+    }
+  }
+
   // Helper to send quick actions
   function sendQuickAction(action, args = []) {
     const locatorStr = locatorInput.value.trim();
@@ -3392,6 +3486,7 @@
       activeScriptTarget = 'page';
       const timeout = parseInt(pageInputTimeout.value, 10) || 5000;
       setPageScriptStatus('Running', 'running');
+      setButtonRunning(pageBtnRun, true);
       clearPageConsole();
       writePageConsole(`[INFO] Starting execution in Extension Sandbox...\n`, 'info');
 
@@ -3419,6 +3514,7 @@
       const timeout = parseInt(workspaceInputTimeout.value, 10) || 30000;
 
       setWorkspaceStatus('Running', 'running');
+      setButtonRunning(workspaceBtnRun, true);
       clearWorkspaceConsole();
       writeWorkspaceConsole(`[INFO] Preparing file and compiling in Workspace Context...\n`, 'info');
 
@@ -3490,6 +3586,7 @@
 
       activeScriptTarget = 'element';
       setInteractionStatus('Running', 'running');
+      setButtonRunning(runIntScriptBtn, true);
       clearPageConsole();
       writePageConsole(`[INFO] Starting element script execution in sandbox...\n`, 'info');
 
@@ -3594,6 +3691,80 @@
         content: workspaceTextareaScript.value,
         mode: workspaceSelectMode.value // 'playwright-test' or 'workspace-standalone'
       });
+    });
+  }
+
+  // Restart Extension listener
+  const restartExtensionBtn = document.getElementById('restart-extension-btn');
+  if (restartExtensionBtn) {
+    restartExtensionBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'restart-extension'
+      });
+    });
+  }
+
+  // Edit/Reset button listeners for badges
+  const elementScriptEditBtn = document.getElementById('element-script-edit-btn');
+  if (elementScriptEditBtn) {
+    elementScriptEditBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'stop-editor-sync',
+        editorId: 'element-script'
+      });
+    });
+  }
+  const elementScriptResetBtn = document.getElementById('element-script-reset-btn');
+  if (elementScriptResetBtn && intTextareaScript) {
+    elementScriptResetBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'stop-editor-sync',
+        editorId: 'element-script'
+      });
+      intTextareaScript.value = '';
+      intTextareaScript.readOnly = false;
+    });
+  }
+
+  const browserScriptEditBtn = document.getElementById('browser-script-edit-btn');
+  if (browserScriptEditBtn) {
+    browserScriptEditBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'stop-editor-sync',
+        editorId: 'browser-script'
+      });
+    });
+  }
+  const browserScriptResetBtn = document.getElementById('browser-script-reset-btn');
+  if (browserScriptResetBtn && pageTextareaScript) {
+    browserScriptResetBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'stop-editor-sync',
+        editorId: 'browser-script'
+      });
+      pageTextareaScript.value = '';
+      pageTextareaScript.readOnly = false;
+    });
+  }
+
+  const workspaceScriptEditBtn = document.getElementById('workspace-script-edit-btn');
+  if (workspaceScriptEditBtn) {
+    workspaceScriptEditBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'stop-editor-sync',
+        editorId: 'workspace-script'
+      });
+    });
+  }
+  const workspaceScriptResetBtn = document.getElementById('workspace-script-reset-btn');
+  if (workspaceScriptResetBtn && workspaceTextareaScript) {
+    workspaceScriptResetBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'stop-editor-sync',
+        editorId: 'workspace-script'
+      });
+      workspaceTextareaScript.value = '';
+      workspaceTextareaScript.readOnly = false;
     });
   }
 

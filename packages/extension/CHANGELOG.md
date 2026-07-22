@@ -2,6 +2,20 @@
 
 All notable changes to the **Playwright Live Playground** extension will be documented in this file.
 
+## [0.2.1] - 2026-07-22
+
+### Fixed
+- **Duplicate `expect` import in CDP-attach mode**: When a user's script already contained `import { test, expect } from '@playwright/test'`, the generated sandbox spec would re-declare `expect` from the injected header, causing a `SyntaxError: Identifier 'expect' has already been declared`. The engine now strips symbols already provided by the generated header from user imports before writing the file.
+- **Open in Editor — save dialog & path resolution**: "Open in Editor" now shows a native VS Code **Save Dialog** so users can choose the exact filename and location. Previously the file was silently written to an auto-detected directory, which could place it outside the intended spec folder. The specific file path is now correctly tracked for subsequent "Run in Workspace" syncing.
+- **Editor sync tracking**: Corrected a map key mismatch (`editorId` vs `filePath`) that caused the workspace-script runner to miss code changes made in the opened editor file.
+
+### Added
+- **`tempDir` VS Code setting**: New `playwright-locator-toolkit.tempDir` configuration option to specify a fixed folder for all temporary playground files (absolute or relative to workspace root).
+- **Restart command**: Added `playwright-locator-toolkit.restart` command to cleanly reconnect the extension without reloading the window.
+- **`stop-editor-sync` message**: Webview can now explicitly stop tracking a particular editor tab, clearing its file mapping.
+
+---
+
 ## [0.2.0] - 2026-07-16
 
 ### Added

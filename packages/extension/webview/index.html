@@ -15,6 +15,7 @@
         <img src="${logoUri}" alt="Logo" class="logo-image">
         <span class="gradient-text">Live Playground</span>
       </div>
+      <button id="restart-extension-btn" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px; margin: 0;" title="Restart Extension (resets connection, caches, and state)">🔄 Restart</button>
     </header>
 
     <!-- CDP Connection Card -->
@@ -173,7 +174,13 @@
                   <label for="int-textarea-script">Custom Element Script</label>
                   <button id="int-script-open-editor-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Open in VS Code editor for full IntelliSense">Open in Editor ↗</button>
                 </div>
-                <div id="element-script-editor-badge" class="editor-open-badge hidden">✏️ Editing in VS Code editor</div>
+                <div id="element-script-editor-badge" class="editor-open-badge hidden">
+                  <span class="badge-text" id="element-script-badge-text">✏️ Syncing with: -</span>
+                  <div class="badge-actions">
+                    <button class="btn-badge btn-edit" id="element-script-edit-btn" title="Disconnect editor and edit in UI">Edit in UI</button>
+                    <button class="btn-badge btn-reset" id="element-script-reset-btn" title="Reset content and disconnect editor">Reset</button>
+                  </div>
+                </div>
                 <textarea id="int-textarea-script" placeholder="// Use 'e' to interact with the matched element&#10;await e.click();&#10;await sleep(500);&#10;await e.fill('Updated text!');" rows="5" spellcheck="false" style="font-family: monospace; font-size: 11px;"></textarea>
                 <span class="tip">💡 Use <code>e</code> to reference the matched locator (e.g., <code>await e.click()</code>).</span>
                 <span class="tip" style="margin-top: 4px; color: var(--accent-start);">💡 If you need more interaction with other elements, use the <a href="#" id="link-to-page-scripting" style="color: var(--accent-start); text-decoration: underline; font-weight: 600;">Browser Scripts</a> tab.</span>
@@ -491,7 +498,13 @@
           <label for="page-textarea-script">Script</label>
           <button id="page-script-open-editor-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Open in VS Code editor for full IntelliSense">Open in Editor ↗</button>
         </div>
-        <div id="browser-script-editor-badge" class="editor-open-badge hidden">✏️ Editing in VS Code editor</div>
+        <div id="browser-script-editor-badge" class="editor-open-badge hidden">
+          <span class="badge-text" id="browser-script-badge-text">✏️ Syncing with: -</span>
+          <div class="badge-actions">
+            <button class="btn-badge btn-edit" id="browser-script-edit-btn" title="Disconnect editor and edit in UI">Edit in UI</button>
+            <button class="btn-badge btn-reset" id="browser-script-reset-btn" title="Reset content and disconnect editor">Reset</button>
+          </div>
+        </div>
         <textarea id="page-textarea-script" placeholder="// Write async commands against the live browser page&#10;// Use the global 'page' variable (Playwright Page instance)&#10;&#10;await page.goto('https://github.com/');&#10;await page.fill('input[type=&quot;text&quot;]', 'Playwright');&#10;await sleep(500);&#10;console.log('Current URL: ' + page.url());" rows="10" spellcheck="false"></textarea>
         <span class="tip">💡 Runs inside a secure sandbox using your connected browser page.</span>
       </div>
@@ -555,7 +568,13 @@
             <button id="workspace-insert-base-btn" class="btn-icon-copy" style="font-size: 10px; padding: 2px 6px;" title="Insert base template for the selected runner">Insert Template</button>
           </div>
         </div>
-        <div id="workspace-script-editor-badge" class="editor-open-badge hidden">✏️ Editing in VS Code editor</div>
+        <div id="workspace-script-editor-badge" class="editor-open-badge hidden">
+          <span class="badge-text" id="workspace-script-badge-text">✏️ Syncing with: -</span>
+          <div class="badge-actions">
+            <button class="btn-badge btn-edit" id="workspace-script-edit-btn" title="Disconnect editor and edit in UI">Edit in UI</button>
+            <button class="btn-badge btn-reset" id="workspace-script-reset-btn" title="Reset content and disconnect editor">Reset</button>
+          </div>
+        </div>
         <textarea id="workspace-textarea-script" placeholder="import { test, expect } from '@playwright/test';&#10;&#10;test('Run spec', async ({ page }) => {&#10;  await page.goto('https://github.com/');&#10;  console.log('Running test in workspace spec!');&#10;});" rows="10" spellcheck="false"></textarea>
         <span class="tip">💡 Imports of local helpers, page objects, configurations, and node modules are fully supported.</span>
       </div>

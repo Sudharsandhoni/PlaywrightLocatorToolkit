@@ -22,6 +22,13 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('workbench.view.extension.playwright-locator-toolkit-container');
     })
   );
+
+  // Command to restart extension
+  context.subscriptions.push(
+    vscode.commands.registerCommand('playwright-locator-toolkit.restart', () => {
+      sidebarProvider.restart();
+    })
+  );
 }
 
 export function deactivate() {}

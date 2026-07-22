@@ -3183,7 +3183,7 @@ export class UIAutomationSDK {
       return { success: false, log: logs, error: err.message || String(err) };
     }
   }
-  prepareWorkspaceScript(workspaceRoot, userCode, cdpUrl, targetUrl, isPlaywrightTest, attachCdp, activeFilePath) {
+  prepareWorkspaceScript(workspaceRoot, userCode, cdpUrl, targetUrl, isPlaywrightTest, attachCdp, activeFilePath, customTempDir) {
     const fs2 = require("fs");
     const path2 = require("path");
     let isTypeScript = true;
@@ -3209,44 +3209,14 @@ export class UIAutomationSDK {
     );
     const fileName = isPlaywrightTest ? `locator-lens-sandbox.spec.${ext}` : `locator-lens-sandbox.${ext}`;
     let targetDir = workspaceRoot;
-    if (isPlaywrightTest) {
-      const findFirstSpecDir = (dir) => {
-        try {
-          const files = fs2.readdirSync(dir);
-          const dirsToSearch = [];
-          for (const file of files) {
-            if (file === "node_modules" || file === ".git" || file === ".vscode" || file === "dist" || file === "build") {
-              continue;
-            }
-            const fullPath = path2.join(dir, file);
-            try {
-              const stat = fs2.statSync(fullPath);
-              if (stat.isDirectory()) {
-                dirsToSearch.push(fullPath);
-              } else if ((file.endsWith(".spec.ts") || file.endsWith(".spec.js") || file.endsWith(".test.ts") || file.endsWith(".test.js")) && !file.includes("locator-lens-sandbox")) {
-                return dir;
-              }
-            } catch {
-            }
-          }
-          for (const subDir of dirsToSearch) {
-            const found = findFirstSpecDir(subDir);
-            if (found) return found;
-          }
-        } catch {
-        }
-        return null;
-      };
+    if (customTempDir) {
+      targetDir = path2.isAbsolute(customTempDir) ? customTempDir : path2.resolve(workspaceRoot, customTempDir);
+    } else if (isPlaywrightTest) {
       let resolvedSpecDir = null;
       if (activeFilePath && activeFilePath.startsWith(workspaceRoot) && (activeFilePath.endsWith(".spec.ts") || activeFilePath.endsWith(".spec.js") || activeFilePath.endsWith(".test.ts") || activeFilePath.endsWith(".test.js"))) {
         resolvedSpecDir = path2.dirname(activeFilePath);
       }
       if (!resolvedSpecDir) {
-        resolvedSpecDir = findFirstSpecDir(workspaceRoot);
-      }
-      if (resolvedSpecDir) {
-        targetDir = resolvedSpecDir;
-      } else {
         let configTestDir = void 0;
         const configFiles = ["playwright.config.ts", "playwright.config.js"];
         for (const configFile of configFiles) {
@@ -3267,18 +3237,52 @@ export class UIAutomationSDK {
         if (configTestDir) {
           const resolvedTestDir = path2.resolve(workspaceRoot, configTestDir);
           if (fs2.existsSync(resolvedTestDir) && fs2.statSync(resolvedTestDir).isDirectory()) {
-            targetDir = resolvedTestDir;
-          }
-        } else {
-          const commonDirs = ["tests", "e2e", "specs", "test"];
-          for (const dirName of commonDirs) {
-            const fullDir = path2.join(workspaceRoot, dirName);
-            if (fs2.existsSync(fullDir) && fs2.statSync(fullDir).isDirectory()) {
-              targetDir = fullDir;
-              break;
-            }
+            resolvedSpecDir = resolvedTestDir;
           }
         }
+      }
+      if (!resolvedSpecDir) {
+        const commonDirs = ["tests", "e2e", "specs", "test"];
+        for (const dirName of commonDirs) {
+          const fullDir = path2.join(workspaceRoot, dirName);
+          if (fs2.existsSync(fullDir) && fs2.statSync(fullDir).isDirectory()) {
+            resolvedSpecDir = fullDir;
+            break;
+          }
+        }
+      }
+      if (!resolvedSpecDir) {
+        const findFirstSpecDir = (dir) => {
+          try {
+            const files = fs2.readdirSync(dir);
+            const dirsToSearch = [];
+            for (const file of files) {
+              if (file === "node_modules" || file === ".git" || file === ".vscode" || file === "dist" || file === "build" || file === "packages") {
+                continue;
+              }
+              const fullPath = path2.join(dir, file);
+              try {
+                const stat = fs2.statSync(fullPath);
+                if (stat.isDirectory()) {
+                  dirsToSearch.push(fullPath);
+                } else if ((file.endsWith(".spec.ts") || file.endsWith(".spec.js") || file.endsWith(".test.ts") || file.endsWith(".test.js")) && !file.includes("locator-lens-sandbox")) {
+                  return dir;
+                }
+              } catch {
+              }
+            }
+            for (const subDir of dirsToSearch) {
+              const found = findFirstSpecDir(subDir);
+              if (found) return found;
+            }
+          } catch {
+          }
+          return null;
+        };
+        resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+      }
+      if (resolvedSpecDir) {
+        targetDir = resolvedSpecDir;
       }
     }
     const filePath = path2.join(targetDir, fileName);
@@ -3331,6 +3335,22 @@ function generateWorkspaceScriptContent(userCode, mode, attachCdp, cdpUrl, targe
         extendTarget = "importedTest";
         return `import { ${newImports} } from '${path2}'`;
       });
+    }
+    if (attachCdp) {
+      const headerSymbols = ["expect"];
+      modifiedImports = modifiedImports.split("\n").map((line) => {
+        if (!/from\s+['"](@playwright\/test|playwright(?:-core)?)['"]/.test(line)) {
+          return line;
+        }
+        let result = line;
+        for (const sym of headerSymbols) {
+          result = result.replace(new RegExp(`\\b${sym}\\b\\s*,\\s*`, "g"), "").replace(new RegExp(`,\\s*\\b${sym}\\b`, "g"), "").replace(new RegExp(`\\b${sym}\\b`, "g"), "");
+        }
+        if (/import\s*\{\s*\}\s+from/.test(result)) {
+          return "";
+        }
+        return result;
+      }).filter((line) => line.trim() !== "").join("\n");
     }
     const hasTestDeclaration = /\btest\s*\(\s*['"`]/.test(userBody) || /\btest\.(only|skip|describe)\b/.test(userBody);
     let testBodyContent = "";
@@ -3533,6 +3553,7 @@ async function rmWithRetry(dirPath, maxAttempts = 3, delayMs = 200) {
   }
 }
 var SidebarProvider = class {
+  // editorId -> fsPath
   constructor(_extensionUri) {
     this._extensionUri = _extensionUri;
   }
@@ -3543,6 +3564,8 @@ var SidebarProvider = class {
   spawnedBrowser;
   tempProfileDir;
   editorDocs = /* @__PURE__ */ new Map();
+  // fsPath -> editorId
+  activeEditorFiles = /* @__PURE__ */ new Map();
   resolveWebviewView(webviewView, context, _token) {
     this._view = webviewView;
     webviewView.webview.options = {
@@ -3961,122 +3984,37 @@ var SidebarProvider = class {
                 isTypeScript = hasTsConfig || hasPlaywrightTs;
               }
               const ext = isTypeScript ? "ts" : "js";
-              let targetDir = workspaceRoot;
-              if (activeFilePath && activeFilePath.startsWith(workspaceRoot)) {
-                try {
-                  const dir = path.dirname(activeFilePath);
-                  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
-                    targetDir = dir;
-                  }
-                } catch {
+              const targetDir = this.getSandboxTargetDir(workspaceRoot, activeFilePath);
+              const defaultName = `playground-${editorId}.${ext}`;
+              const defaultUri = vscode.Uri.file(path.join(targetDir, defaultName));
+              const saveUri = await vscode.window.showSaveDialog({
+                defaultUri,
+                title: "Save Playground Script",
+                filters: {
+                  "Script Files": [ext]
                 }
-              } else {
-                const findFirstSpecDir = (dir) => {
+              });
+              if (!saveUri) {
+                return;
+              }
+              const filePath = saveUri.fsPath;
+              const parentDir = path.dirname(filePath);
+              if (!fs.existsSync(parentDir)) {
+                fs.mkdirSync(parentDir, { recursive: true });
+              }
+              if (filePath.startsWith(workspaceRoot)) {
+                const rootGitIgnore = path.join(workspaceRoot, ".gitignore");
+                const relativePathForGitignore = path.relative(workspaceRoot, filePath).replace(/\\/g, "/");
+                if (fs.existsSync(rootGitIgnore)) {
                   try {
-                    const files = fs.readdirSync(dir);
-                    const dirsToSearch = [];
-                    for (const file of files) {
-                      if (file === "node_modules" || file === ".git" || file === ".vscode" || file === "dist" || file === "build") {
-                        continue;
-                      }
-                      const fullPath = path.join(dir, file);
-                      try {
-                        const stat = fs.statSync(fullPath);
-                        if (stat.isDirectory()) {
-                          dirsToSearch.push(fullPath);
-                        } else if ((file.endsWith(".spec.ts") || file.endsWith(".spec.js") || file.endsWith(".test.ts") || file.endsWith(".test.js")) && !file.includes("locator-lens-sandbox")) {
-                          return dir;
-                        }
-                      } catch {
-                      }
-                    }
-                    for (const subDir of dirsToSearch) {
-                      const found = findFirstSpecDir(subDir);
-                      if (found) return found;
+                    const gitIgnoreContent = fs.readFileSync(rootGitIgnore, "utf8");
+                    if (!gitIgnoreContent.includes(relativePathForGitignore)) {
+                      fs.writeFileSync(rootGitIgnore, gitIgnoreContent.trim() + "\n\n# Playwright Live Playground Temp File\n/" + relativePathForGitignore + "\n", "utf8");
                     }
                   } catch {
                   }
-                  return null;
-                };
-                const resolvedSpecDir = findFirstSpecDir(workspaceRoot);
-                if (resolvedSpecDir) {
-                  targetDir = resolvedSpecDir;
-                } else {
-                  let configTestDir = void 0;
-                  const configFiles = ["playwright.config.ts", "playwright.config.js"];
-                  for (const configFile of configFiles) {
-                    const configPath = path.join(workspaceRoot, configFile);
-                    if (fs.existsSync(configPath)) {
-                      try {
-                        const content2 = fs.readFileSync(configPath, "utf8");
-                        const match = content2.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
-                        if (match && match[1]) {
-                          configTestDir = match[1].trim();
-                          break;
-                        }
-                      } catch {
-                      }
-                    }
-                  }
-                  if (configTestDir) {
-                    const resolvedTestDir = path.resolve(workspaceRoot, configTestDir);
-                    if (fs.existsSync(resolvedTestDir) && fs.statSync(resolvedTestDir).isDirectory()) {
-                      targetDir = resolvedTestDir;
-                    }
-                  } else {
-                    const commonDirs = ["tests", "e2e", "specs", "test"];
-                    for (const dirName of commonDirs) {
-                      const fullDir = path.join(workspaceRoot, dirName);
-                      if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
-                        targetDir = fullDir;
-                        break;
-                      }
-                    }
-                  }
                 }
               }
-              if (!fs.existsSync(targetDir)) {
-                fs.mkdirSync(targetDir, { recursive: true });
-              }
-              const rootGitIgnore = path.join(workspaceRoot, ".gitignore");
-              const ignorePatterns = [
-                "# Playwright Live Playground Temporary Files",
-                "**/playground-*.ts",
-                "**/playground-*.js",
-                "**/locator-lens-sandbox.spec.ts",
-                "**/locator-lens-sandbox.spec.js",
-                "**/locator-lens-sandbox.ts",
-                "**/locator-lens-sandbox.js"
-              ];
-              if (fs.existsSync(rootGitIgnore)) {
-                try {
-                  const gitIgnoreContent = fs.readFileSync(rootGitIgnore, "utf8");
-                  const linesToAdd = ignorePatterns.filter((pattern) => !gitIgnoreContent.includes(pattern));
-                  if (linesToAdd.length > 0) {
-                    fs.writeFileSync(rootGitIgnore, gitIgnoreContent.trim() + "\n\n" + linesToAdd.join("\n") + "\n", "utf8");
-                  }
-                } catch {
-                }
-              } else {
-                const vscodeDir = path.join(workspaceRoot, ".vscode");
-                if (!fs.existsSync(vscodeDir)) {
-                  fs.mkdirSync(vscodeDir, { recursive: true });
-                }
-                const gitIgnorePath = path.join(vscodeDir, ".gitignore");
-                try {
-                  let gitIgnoreContent = "";
-                  if (fs.existsSync(gitIgnorePath)) {
-                    gitIgnoreContent = fs.readFileSync(gitIgnorePath, "utf8");
-                  }
-                  const linesToAdd = ignorePatterns.filter((pattern) => !gitIgnoreContent.includes(pattern));
-                  if (linesToAdd.length > 0) {
-                    fs.writeFileSync(gitIgnorePath, gitIgnoreContent.trim() + "\n\n" + linesToAdd.join("\n") + "\n", "utf8");
-                  }
-                } catch {
-                }
-              }
-              const fileName = `playground-${editorId}.${ext}`;
-              const filePath = path.join(targetDir, fileName);
               let finalContent = content;
               if (!content.includes("/// <reference types=")) {
                 if (editorId === "element-script") {
@@ -4097,7 +4035,8 @@ var SidebarProvider = class {
               }
               fs.writeFileSync(filePath, finalContent, "utf8");
               const uri = vscode.Uri.file(filePath);
-              this.editorDocs.set(editorId, uri);
+              this.editorDocs.set(filePath, editorId);
+              this.activeEditorFiles.set(editorId, filePath);
               const doc = await vscode.workspace.openTextDocument(uri);
               await vscode.window.showTextDocument(doc, {
                 viewColumn: vscode.ViewColumn.Beside,
@@ -4106,7 +4045,9 @@ var SidebarProvider = class {
               });
               webviewView.webview.postMessage({
                 type: "editor-opened",
-                editorId
+                editorId,
+                filePath,
+                fileName: path.basename(filePath)
               });
             } catch (err) {
               vscode.window.showErrorMessage(`Failed to open editor: ${err.message}`);
@@ -4117,9 +4058,9 @@ var SidebarProvider = class {
             if (!this.activePageId) return;
             let userCode = data.userCode || "";
             const editorId = data.locatorStr ? "element-script" : "browser-script";
-            const editorUri = this.editorDocs.get(editorId);
-            if (editorUri) {
-              const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === editorUri.fsPath);
+            const activeFilePath = this.activeEditorFiles.get(editorId);
+            if (activeFilePath) {
+              const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === activeFilePath);
               if (doc) {
                 userCode = doc.getText();
               }
@@ -4136,6 +4077,24 @@ var SidebarProvider = class {
               log: res.log,
               error: res.error
             });
+            break;
+          }
+          case "stop-editor-sync": {
+            const editorId = data.editorId;
+            this.activeEditorFiles.delete(editorId);
+            for (const [filePath, eid] of this.editorDocs.entries()) {
+              if (eid === editorId) {
+                this.editorDocs.delete(filePath);
+              }
+            }
+            webviewView.webview.postMessage({
+              type: "editor-closed",
+              editorId
+            });
+            break;
+          }
+          case "restart-extension": {
+            await this.restart();
             break;
           }
           case "execute-workspace-script": {
@@ -4178,16 +4137,17 @@ var SidebarProvider = class {
               return;
             }
             let userCode = data.userCode || "";
-            const editorUri = this.editorDocs.get("workspace-script");
-            if (editorUri) {
-              const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === editorUri.fsPath);
+            const activeFilePath = this.activeEditorFiles.get("workspace-script");
+            if (activeFilePath) {
+              const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === activeFilePath);
               if (doc) {
                 userCode = doc.getText();
               }
             }
             const activeEditor = vscode.window.activeTextEditor;
-            const activeFilePath = activeEditor ? activeEditor.document.uri.fsPath : void 0;
+            const activeFilePathForResolving = activeEditor ? activeEditor.document.uri.fsPath : void 0;
             const isPlaywrightTest = data.mode === "playwright-test";
+            const customTempDir = this.getSandboxTargetDir(workspaceRoot, activeFilePathForResolving);
             const { filePath, cleanup } = this.engine.prepareWorkspaceScript(
               workspaceRoot,
               userCode,
@@ -4195,7 +4155,8 @@ var SidebarProvider = class {
               targetUrl,
               isPlaywrightTest,
               attachCdp,
-              activeFilePath
+              activeFilePathForResolving,
+              customTempDir
             );
             let runCmd = (data.runnerCommand || "").trim();
             if (!runCmd) {
@@ -4303,36 +4264,36 @@ var SidebarProvider = class {
       }
     });
     const docChangeDisposable = vscode.workspace.onDidChangeTextDocument((e) => {
-      for (const [editorId, uri] of this.editorDocs.entries()) {
-        if (e.document.uri.fsPath === uri.fsPath) {
-          try {
-            webviewView.webview.postMessage({
-              type: "editor-content-synced",
-              editorId,
-              content: e.document.getText()
-            });
-          } catch {
-          }
+      const editorId = this.editorDocs.get(e.document.uri.fsPath);
+      if (editorId) {
+        this.activeEditorFiles.set(editorId, e.document.uri.fsPath);
+        try {
+          webviewView.webview.postMessage({
+            type: "editor-content-synced",
+            editorId,
+            content: e.document.getText(),
+            filePath: e.document.uri.fsPath,
+            fileName: path.basename(e.document.uri.fsPath)
+          });
+        } catch {
         }
       }
     });
     const docCloseDisposable = vscode.workspace.onDidCloseTextDocument((doc) => {
-      for (const [editorId, uri] of this.editorDocs.entries()) {
-        if (doc.uri.fsPath === uri.fsPath) {
-          this.editorDocs.delete(editorId);
-          try {
-            webviewView.webview.postMessage({
-              type: "editor-closed",
-              editorId
-            });
-          } catch {
-          }
-          try {
-            if (fs.existsSync(doc.uri.fsPath)) {
-              fs.unlinkSync(doc.uri.fsPath);
-            }
-          } catch {
-          }
+      const editorId = this.editorDocs.get(doc.uri.fsPath);
+      if (editorId) {
+        this.editorDocs.delete(doc.uri.fsPath);
+        const activeFile = this.activeEditorFiles.get(editorId);
+        if (activeFile === doc.uri.fsPath) {
+          this.activeEditorFiles.delete(editorId);
+        }
+        try {
+          webviewView.webview.postMessage({
+            type: "editor-closed",
+            editorId,
+            filePath: doc.uri.fsPath
+          });
+        } catch {
         }
       }
     });
@@ -4366,6 +4327,108 @@ var SidebarProvider = class {
     html = html.replace(/\$\{cspSource\}/g, cspSource);
     return html;
   }
+  async restart() {
+    try {
+      await this.engine.disconnect();
+    } catch {
+    }
+    try {
+      if (this.spawnedBrowser) {
+        this.spawnedBrowser.kill();
+      }
+    } catch {
+    }
+    this.editorDocs.clear();
+    this.activeEditorFiles.clear();
+    this.engine = new LocatorEngine();
+    this.activePageId = void 0;
+    if (this._view) {
+      this._view.webview.postMessage({
+        type: "extension-restarted"
+      });
+    }
+    vscode.window.showInformationMessage("Playwright Live Playground extension restarted.");
+  }
+  getSandboxTargetDir(workspaceRoot, activeFilePath) {
+    var _a;
+    const config = vscode.workspace.getConfiguration("playwright-locator-toolkit");
+    const customTempDir = (_a = config.get("tempDir")) == null ? void 0 : _a.trim();
+    if (customTempDir) {
+      return path.isAbsolute(customTempDir) ? customTempDir : path.resolve(workspaceRoot, customTempDir);
+    }
+    if (activeFilePath && activeFilePath.startsWith(workspaceRoot)) {
+      if (activeFilePath.endsWith(".spec.ts") || activeFilePath.endsWith(".spec.js") || activeFilePath.endsWith(".test.ts") || activeFilePath.endsWith(".test.js")) {
+        try {
+          const dir = path.dirname(activeFilePath);
+          if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+            return dir;
+          }
+        } catch {
+        }
+      }
+    }
+    let configTestDir = void 0;
+    const configFiles = ["playwright.config.ts", "playwright.config.js"];
+    for (const configFile of configFiles) {
+      const configPath = path.join(workspaceRoot, configFile);
+      if (fs.existsSync(configPath)) {
+        try {
+          const content = fs.readFileSync(configPath, "utf8");
+          const match = content.match(/testDir\s*:\s*['"`]([^'"`]+)['"`]/);
+          if (match && match[1]) {
+            configTestDir = match[1].trim();
+            break;
+          }
+        } catch {
+        }
+      }
+    }
+    if (configTestDir) {
+      const resolvedTestDir = path.resolve(workspaceRoot, configTestDir);
+      if (fs.existsSync(resolvedTestDir) && fs.statSync(resolvedTestDir).isDirectory()) {
+        return resolvedTestDir;
+      }
+    }
+    const commonDirs = ["tests", "e2e", "specs", "test"];
+    for (const dirName of commonDirs) {
+      const fullDir = path.join(workspaceRoot, dirName);
+      if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+        return fullDir;
+      }
+    }
+    const findFirstSpecDir = (dir) => {
+      try {
+        const files = fs.readdirSync(dir);
+        const dirsToSearch = [];
+        for (const file of files) {
+          if (file === "node_modules" || file === ".git" || file === ".vscode" || file === "dist" || file === "build" || file === "packages") {
+            continue;
+          }
+          const fullPath = path.join(dir, file);
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+              dirsToSearch.push(fullPath);
+            } else if ((file.endsWith(".spec.ts") || file.endsWith(".spec.js") || file.endsWith(".test.ts") || file.endsWith(".test.js")) && !file.includes("locator-lens-sandbox")) {
+              return dir;
+            }
+          } catch {
+          }
+        }
+        for (const subDir of dirsToSearch) {
+          const found = findFirstSpecDir(subDir);
+          if (found) return found;
+        }
+      } catch {
+      }
+      return null;
+    };
+    const resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+    if (resolvedSpecDir) {
+      return resolvedSpecDir;
+    }
+    return workspaceRoot;
+  }
 };
 
 // src/extension.ts
@@ -4385,6 +4448,11 @@ function activate(context) {
   context.subscriptions.push(
     vscode2.commands.registerCommand("playwright-locator-toolkit.focusSidebar", () => {
       vscode2.commands.executeCommand("workbench.view.extension.playwright-locator-toolkit-container");
+    })
+  );
+  context.subscriptions.push(
+    vscode2.commands.registerCommand("playwright-locator-toolkit.restart", () => {
+      sidebarProvider.restart();
     })
   );
 }

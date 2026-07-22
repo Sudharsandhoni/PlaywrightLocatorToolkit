@@ -2,12 +2,15 @@
   "name": "playwright-locator-toolkit",
   "displayName": "Playwright Live Playground",
   "description": "Live Playwright Playground & Locator Analysis in VS Code",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "sudharsan-ezhumalai",
   "icon": "icon.png",
   "engines": {
     "vscode": "^1.80.0"
   },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "categories": [
     "Testing",
     "Other"
@@ -57,9 +60,26 @@
           "type": "boolean",
           "default": false,
           "description": "If true, deletes the browser's temporary user profile directory on exit. If false, persists it for fast launch."
+        },
+        "playwright-locator-toolkit.tempDir": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: Folder path where temporary playground scripts are created. Can be an absolute path or relative to the workspace root."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "playwright-locator-toolkit.openSidebar",
+        "title": "Open Playwright Live Playground",
+        "category": "Playwright Live Playground"
+      },
+      {
+        "command": "playwright-locator-toolkit.restart",
+        "title": "Restart Extension",
+        "category": "Playwright Live Playground"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

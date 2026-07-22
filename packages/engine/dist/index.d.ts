@@ -47,7 +47,7 @@ export declare class LocatorEngine {
         log: string[];
         error?: string;
     }>;
-    prepareWorkspaceScript(workspaceRoot: string, userCode: string, cdpUrl: string, targetUrl: string, isPlaywrightTest: boolean, attachCdp: boolean, activeFilePath?: string): {
+    prepareWorkspaceScript(workspaceRoot: string, userCode: string, cdpUrl: string, targetUrl: string, isPlaywrightTest: boolean, attachCdp: boolean, activeFilePath?: string, customTempDir?: string): {
         filePath: string;
         cleanup: () => void;
     };

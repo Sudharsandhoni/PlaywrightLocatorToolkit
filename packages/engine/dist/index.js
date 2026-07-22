@@ -1624,7 +1624,7 @@ export class UIAutomationSDK {
             return { success: false, log: logs, error: err.message || String(err) };
         }
     }
-    prepareWorkspaceScript(workspaceRoot, userCode, cdpUrl, targetUrl, isPlaywrightTest, attachCdp, activeFilePath) {
+    prepareWorkspaceScript(workspaceRoot, userCode, cdpUrl, targetUrl, isPlaywrightTest, attachCdp, activeFilePath, customTempDir) {
         const fs = require('fs');
         const path = require('path');
         let isTypeScript = true;
@@ -1645,38 +1645,10 @@ export class UIAutomationSDK {
         const fileContent = generateWorkspaceScriptContent(userCode, isPlaywrightTest ? 'playwright-test' : 'standalone', attachCdp, cdpUrl, targetUrl, isTypeScript);
         const fileName = isPlaywrightTest ? `locator-lens-sandbox.spec.${ext}` : `locator-lens-sandbox.${ext}`;
         let targetDir = workspaceRoot;
-        if (isPlaywrightTest) {
-            const findFirstSpecDir = (dir) => {
-                try {
-                    const files = fs.readdirSync(dir);
-                    const dirsToSearch = [];
-                    for (const file of files) {
-                        if (file === 'node_modules' || file === '.git' || file === '.vscode' || file === 'dist' || file === 'build') {
-                            continue;
-                        }
-                        const fullPath = path.join(dir, file);
-                        try {
-                            const stat = fs.statSync(fullPath);
-                            if (stat.isDirectory()) {
-                                dirsToSearch.push(fullPath);
-                            }
-                            else if ((file.endsWith('.spec.ts') || file.endsWith('.spec.js') ||
-                                file.endsWith('.test.ts') || file.endsWith('.test.js')) &&
-                                !file.includes('locator-lens-sandbox')) {
-                                return dir;
-                            }
-                        }
-                        catch { }
-                    }
-                    for (const subDir of dirsToSearch) {
-                        const found = findFirstSpecDir(subDir);
-                        if (found)
-                            return found;
-                    }
-                }
-                catch { }
-                return null;
-            };
+        if (customTempDir) {
+            targetDir = path.isAbsolute(customTempDir) ? customTempDir : path.resolve(workspaceRoot, customTempDir);
+        }
+        else if (isPlaywrightTest) {
             let resolvedSpecDir = null;
             if (activeFilePath && activeFilePath.startsWith(workspaceRoot) &&
                 (activeFilePath.endsWith('.spec.ts') || activeFilePath.endsWith('.spec.js') ||
@@ -1684,12 +1656,6 @@ export class UIAutomationSDK {
                 resolvedSpecDir = path.dirname(activeFilePath);
             }
             if (!resolvedSpecDir) {
-                resolvedSpecDir = findFirstSpecDir(workspaceRoot);
-            }
-            if (resolvedSpecDir) {
-                targetDir = resolvedSpecDir;
-            }
-            else {
                 let configTestDir = undefined;
                 const configFiles = ['playwright.config.ts', 'playwright.config.js'];
                 for (const configFile of configFiles) {
@@ -1711,19 +1677,61 @@ export class UIAutomationSDK {
                 if (configTestDir) {
                     const resolvedTestDir = path.resolve(workspaceRoot, configTestDir);
                     if (fs.existsSync(resolvedTestDir) && fs.statSync(resolvedTestDir).isDirectory()) {
-                        targetDir = resolvedTestDir;
+                        resolvedSpecDir = resolvedTestDir;
                     }
                 }
-                else {
-                    const commonDirs = ['tests', 'e2e', 'specs', 'test'];
-                    for (const dirName of commonDirs) {
-                        const fullDir = path.join(workspaceRoot, dirName);
-                        if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
-                            targetDir = fullDir;
-                            break;
+            }
+            if (!resolvedSpecDir) {
+                const commonDirs = ['tests', 'e2e', 'specs', 'test'];
+                for (const dirName of commonDirs) {
+                    const fullDir = path.join(workspaceRoot, dirName);
+                    if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+                        resolvedSpecDir = fullDir;
+                        break;
+                    }
+                }
+            }
+            if (!resolvedSpecDir) {
+                const findFirstSpecDir = (dir) => {
+                    try {
+                        const files = fs.readdirSync(dir);
+                        const dirsToSearch = [];
+                        for (const file of files) {
+                            if (file === 'node_modules' ||
+                                file === '.git' ||
+                                file === '.vscode' ||
+                                file === 'dist' ||
+                                file === 'build' ||
+                                file === 'packages') {
+                                continue;
+                            }
+                            const fullPath = path.join(dir, file);
+                            try {
+                                const stat = fs.statSync(fullPath);
+                                if (stat.isDirectory()) {
+                                    dirsToSearch.push(fullPath);
+                                }
+                                else if ((file.endsWith('.spec.ts') || file.endsWith('.spec.js') ||
+                                    file.endsWith('.test.ts') || file.endsWith('.test.js')) &&
+                                    !file.includes('locator-lens-sandbox')) {
+                                    return dir;
+                                }
+                            }
+                            catch { }
+                        }
+                        for (const subDir of dirsToSearch) {
+                            const found = findFirstSpecDir(subDir);
+                            if (found)
+                                return found;
                         }
                     }
-                }
+                    catch { }
+                    return null;
+                };
+                resolvedSpecDir = findFirstSpecDir(workspaceRoot);
+            }
+            if (resolvedSpecDir) {
+                targetDir = resolvedSpecDir;
             }
         }
         const filePath = path.join(targetDir, fileName);
@@ -1781,6 +1789,36 @@ function generateWorkspaceScriptContent(userCode, mode, attachCdp, cdpUrl, targe
                 extendTarget = 'importedTest';
                 return `import { ${newImports} } from '${path}'`;
             });
+        }
+        // In CDP mode the generated header always supplies `test as base` and `expect` from
+        // '@playwright/test'. Strip those symbols from user imports to prevent duplicate
+        // identifier errors (e.g. `expect` declared twice).
+        if (attachCdp) {
+            // Symbols the generated header already exports
+            const headerSymbols = ['expect'];
+            modifiedImports = modifiedImports
+                .split('\n')
+                .map(line => {
+                // Only touch imports from '@playwright/test' or 'playwright' core packages
+                if (!/from\s+['"](@playwright\/test|playwright(?:-core)?)['"]/.test(line)) {
+                    return line;
+                }
+                let result = line;
+                for (const sym of headerSymbols) {
+                    // Remove `sym,` or `, sym` or standalone `sym` inside the import braces
+                    result = result
+                        .replace(new RegExp(`\\b${sym}\\b\\s*,\\s*`, 'g'), '')
+                        .replace(new RegExp(`,\\s*\\b${sym}\\b`, 'g'), '')
+                        .replace(new RegExp(`\\b${sym}\\b`, 'g'), '');
+                }
+                // If removing symbols left an empty import braces `{ }` or `{}`, drop the whole line
+                if (/import\s*\{\s*\}\s+from/.test(result)) {
+                    return '';
+                }
+                return result;
+            })
+                .filter(line => line.trim() !== '')
+                .join('\n');
         }
         const hasTestDeclaration = /\btest\s*\(\s*['"`]/.test(userBody) || /\btest\.(only|skip|describe)\b/.test(userBody);
         let testBodyContent = '';
