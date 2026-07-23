@@ -3,6 +3,7 @@
 node_modules/@esbuild/**
 node_modules/@types/**
 node_modules/.bin/**
+!node_modules/playwright-core/**
 .vscode/**
 src/**
 tsconfig.json

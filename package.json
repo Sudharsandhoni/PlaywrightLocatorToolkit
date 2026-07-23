@@ -1,6 +1,6 @@
 {
   "name": "playwright-locator-toolkit-workspace",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Live Playwright Locator Validation & Analysis VSCode Extension",
   "workspaces": [

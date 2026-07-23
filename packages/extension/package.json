@@ -2,7 +2,7 @@
   "name": "playwright-locator-toolkit",
   "displayName": "Playwright Live Playground",
   "description": "Live Playwright Playground & Locator Analysis in VS Code",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "sudharsan-ezhumalai",
   "icon": "icon.png",
   "engines": {
@@ -86,7 +86,7 @@
     "compile": "node build.js",
     "watch": "node build.js --watch",
     "build": "npm run compile",
-    "package": "vsce package"
+    "package": "npx @vscode/vsce package"
   },
   "license": "MIT",
   "repository": {
@@ -97,12 +97,11 @@
     "url": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit/issues"
   },
   "homepage": "https://github.com/Sudharsandhoni/PlaywrightLocatorToolkit#readme",
-  "dependencies": {
-    "playwright-core": "^1.61.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/vscode": "^1.80.0",
     "esbuild": "^0.28.1",
+    "playwright-core": "^1.61.1",
     "playwright-locator-toolkit-engine": "file:../engine",
     "playwright-locator-toolkit-parser": "file:../locator-parser",
     "playwright-locator-toolkit-shared": "file:../shared"

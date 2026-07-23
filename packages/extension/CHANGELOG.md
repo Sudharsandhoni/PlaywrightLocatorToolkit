@@ -2,6 +2,11 @@
 
 All notable changes to the **Playwright Live Playground** extension will be documented in this file.
 
+## [0.2.2] - 2026-07-23
+
+### Fixed
+- **Playwright Core packaging issue**: Added automatic copying of the `playwright-core` module to the local `node_modules` during the build/prepublish phase if it is hoisted in an npm workspace. This resolves the runtime launch error where the extension couldn't open because `playwright-core` was missing from the packaged VSIX.
+
 ## [0.2.1] - 2026-07-22
 
 ### Fixed
